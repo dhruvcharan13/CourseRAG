@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "course-kb"
+version = "0.0.1"
+description = "Per-course RAG knowledge base — isolated LanceDB store per course behind one interface."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["lancedb"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+kb = "course_kb.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/course_kb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

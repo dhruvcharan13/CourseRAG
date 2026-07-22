@@ -1,0 +1,88 @@
+"""Per-course vector store backed by LanceDB.
+
+Each course is one LanceDB dataset in its own directory. ``lancedb.connect``
+treats the course directory as the database and a table named ``index``
+materializes as ``<course_dir>/index.lance/`` — matching the on-disk layout.
+
+Search is Phase 3; :meth:`CourseStore.search` is intentionally a stub.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import lancedb
+import pyarrow as pa
+
+from course_kb.records import ChunkRecord
+
+TABLE_NAME = "index"
+
+
+def _build_schema(dims: int) -> pa.Schema:
+    """Arrow schema mirroring :meth:`ChunkRecord.to_dict`.
+
+    The vector is a fixed-size ``float32`` list of length ``dims``; every other
+    field is a scalar, with the optional ones nullable.
+    """
+    return pa.schema(
+        [
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("text", pa.string(), nullable=False),
+            pa.field("vector", pa.list_(pa.float32(), dims), nullable=False),
+            pa.field("course", pa.string(), nullable=False),
+            pa.field("source_file", pa.string(), nullable=False),
+            pa.field("category", pa.string(), nullable=False),
+            pa.field("title", pa.string(), nullable=True),
+            pa.field("module", pa.string(), nullable=True),
+            pa.field("page", pa.int64(), nullable=True),
+            pa.field("char_start", pa.int64(), nullable=True),
+            pa.field("char_end", pa.int64(), nullable=True),
+            pa.field("content_hash", pa.string(), nullable=False),
+            pa.field("added_at", pa.string(), nullable=False),
+        ]
+    )
+
+
+class CourseStore:
+    """A LanceDB-backed store for a single course."""
+
+    def __init__(self, table: "lancedb.table.Table", dims: int) -> None:
+        self._table = table
+        self.dims = dims
+
+    @classmethod
+    def open_or_create(cls, course_dir: Path, dims: int) -> "CourseStore":
+        """Open the course's ``index`` table, creating it empty if absent."""
+        course_dir.mkdir(parents=True, exist_ok=True)
+        db = lancedb.connect(course_dir)
+        # A course DB only ever holds the single "index" table, so reading the
+        # (unpaginated) table list here is safe.
+        if TABLE_NAME in db.list_tables().tables:
+            table = db.open_table(TABLE_NAME)
+        else:
+            table = db.create_table(TABLE_NAME, schema=_build_schema(dims))
+        return cls(table, dims)
+
+    def add(self, records: list[ChunkRecord]) -> None:
+        """Insert records. Every record must be embedded (``vector`` set)."""
+        if not records:
+            return
+        for r in records:
+            if r.vector is None:
+                raise ValueError(f"ChunkRecord {r.id!r} has no vector; embed before storing.")
+            if len(r.vector) != self.dims:
+                raise ValueError(
+                    f"ChunkRecord {r.id!r} vector has {len(r.vector)} dims, expected {self.dims}."
+                )
+        rows = [r.to_dict() for r in records]
+        arrow_table = pa.Table.from_pylist(rows, schema=_build_schema(self.dims))
+        self._table.add(arrow_table)
+
+    def count(self) -> int:
+        """Number of stored chunks."""
+        return self._table.count_rows()
+
+    def search(self, *args: object, **kwargs: object) -> object:
+        """Retrieval — implemented in Phase 3."""
+        raise NotImplementedError("search is Phase 3")

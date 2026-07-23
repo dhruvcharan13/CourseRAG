@@ -83,6 +83,26 @@ class CourseStore:
         """Number of stored chunks."""
         return self._table.count_rows()
 
+    def existing_hashes(self, source_file: str | None = None) -> set[str]:
+        """Stored ``content_hash`` values, optionally scoped to one source file.
+
+        Scoping to ``source_file`` keeps dedup per-file: re-ingesting a file is a
+        no-op, while an identical slide shared across different files is retained
+        in each (preserving per-file page provenance).
+        """
+        if self._table.count_rows() == 0:
+            return set()
+        table = self._table.to_arrow()
+        hashes = table.column("content_hash").to_pylist()
+        if source_file is None:
+            return set(hashes)
+        files = table.column("source_file").to_pylist()
+        return {h for h, f in zip(hashes, files) if f == source_file}
+
+    def get_all(self) -> list[ChunkRecord]:
+        """Read every stored row back as a :class:`ChunkRecord`."""
+        return [ChunkRecord.from_dict(row) for row in self._table.to_arrow().to_pylist()]
+
     def search(self, *args: object, **kwargs: object) -> object:
         """Retrieval — implemented in Phase 3."""
         raise NotImplementedError("search is Phase 3")

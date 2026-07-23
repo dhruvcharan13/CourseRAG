@@ -8,16 +8,17 @@ are fully working (ingest proves parse -> chunk -> embed -> store); ``list`` and
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from course_kb import __version__
+from course_kb.chunker import chunk_document
 from course_kb.config import Config, load_config
 from course_kb.embedding import get_embedder
 from course_kb.manifest import Manifest, manifest_path, read_manifest, write_manifest
 from course_kb.parsing import get_parser_for
-from course_kb.records import ChunkRecord
 from course_kb.store import CourseStore
 
 
@@ -88,33 +89,34 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     doc = parser.parse(path)
 
     added_at = _now_iso()
-    records: list[ChunkRecord] = []
-    for i, element in enumerate(doc.elements):
-        page_part = f"p{element.page}" if element.page is not None else "p0"
-        records.append(
-            ChunkRecord(
-                id=f"{course_id}::{path.name}::{page_part}::c{i}",
-                text=element.text,
-                course=course_id,
-                source_file=path.name,
-                category=args.category,
-                content_hash=ChunkRecord.hash_text(element.text),
-                added_at=added_at,
-                title=element.title,
-                module=None,
-                page=element.page,
-                char_range=(0, len(element.text)),
-            )
+    records = chunk_document(
+        doc,
+        course=course_id,
+        source_file=path.name,
+        category=args.category,
+        cfg=cfg,
+        added_at=added_at,
+    )
+
+    embedder = get_embedder(cfg.embedder, cfg)
+    store = CourseStore.open_or_create(course_dir, embedder.dims)
+
+    # Skip chunks already stored for THIS file (by content hash) so re-ingest is
+    # a no-op, while identical slides shared across files are kept per file.
+    existing = store.existing_hashes(path.name)
+    new_records = [r for r in records if r.content_hash not in existing]
+    if not new_records:
+        print(
+            f"No new chunks from {path.name}; already up to date in "
+            f"'{course_id}' (total: {store.count()})"
         )
+        return 0
 
     # Embed (one vector per chunk), then store.
-    embedder = get_embedder(cfg.embedder, cfg)
-    vectors = embedder.embed([r.text for r in records])
-    for record, vector in zip(records, vectors):
+    vectors = embedder.embed([r.text for r in new_records])
+    for record, vector in zip(new_records, vectors):
         record.vector = vector
-
-    store = CourseStore.open_or_create(course_dir, embedder.dims)
-    store.add(records)
+    store.add(new_records)
 
     # Update the manifest.
     manifest = read_manifest(course_dir)
@@ -125,7 +127,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     manifest.last_indexed = added_at
     write_manifest(course_dir, manifest)
 
-    print(f"Ingested {len(records)} chunk(s) from {path.name} into '{course_id}' (total: {store.count()})")
+    print(
+        f"Ingested {len(new_records)} chunk(s) from {path.name} into "
+        f"'{course_id}' (total: {store.count()})"
+    )
     return 0
 
 
@@ -183,6 +188,42 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chunks(args: argparse.Namespace) -> int:
+    """Parse + chunk a file and print the chunks as JSON — no embed, no store."""
+    cfg = load_config()
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"No such file: {path}", file=sys.stderr)
+        return 1
+
+    parser = get_parser_for(path)
+    doc = parser.parse(path)
+    records = chunk_document(
+        doc,
+        course=args.course_id,
+        source_file=path.name,
+        category="(dry-run)",
+        cfg=cfg,
+        added_at=_now_iso(),
+    )
+
+    payload = [
+        {
+            "id": r.id,
+            "page": r.page,
+            "title": r.title,
+            "char_range": list(r.char_range) if r.char_range is not None else None,
+            "content_hash": r.content_hash,
+            "chars": len(r.text),
+            "text": r.text,
+        }
+        for r in records
+    ]
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(f"\n{len(records)} chunk(s) from {path.name}", file=sys.stderr)
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
@@ -213,6 +254,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_search = sub.add_parser("search", help="Retrieve chunks (Phase 3).")
     p_search.add_argument("query", nargs="*", help="Search query (ignored in Phase 0).")
     p_search.set_defaults(func=cmd_search)
+
+    p_chunks = sub.add_parser(
+        "chunks", help="Parse + chunk a file and print chunks as JSON (no embed/store)."
+    )
+    p_chunks.add_argument("course_id")
+    p_chunks.add_argument("path")
+    p_chunks.set_defaults(func=cmd_chunks)
 
     return parser
 

@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Per-course RAG knowledge base — isolated LanceDB store per course behind one interface."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["lancedb"]
+dependencies = ["lancedb", "pymupdf"]
 
 [project.optional-dependencies]
 dev = ["pytest"]

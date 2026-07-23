@@ -81,6 +81,8 @@ def get_parser_for(path: Path) -> Parser:
 # Register the built-in reference parser on import so the registry is usable
 # out of the box. Imported here (bottom of module) to avoid a circular import,
 # since text.py imports the names defined above.
+from course_kb.parsing.pdf import PdfParser  # noqa: E402
 from course_kb.parsing.text import TextParser  # noqa: E402
 
 register_parser(TextParser())
+register_parser(PdfParser())

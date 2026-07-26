@@ -34,6 +34,9 @@ class ChunkRecord:
     title: str | None = None
     module: str | None = None
     page: int | None = None
+    # Offsets of the chunk BODY within the source element's text, i.e.
+    # element_text[char_start:char_end] == the body. Note ``text`` additionally has
+    # the section/slide title prepended, so char_range does NOT index ``text``.
     char_range: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:

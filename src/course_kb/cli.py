@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from course_kb import __version__
-from course_kb.chunker import chunk_document
+from course_kb.chunker import chunk_document, estimate_tokens, is_slide_deck, keep_elements
 from course_kb.config import Config, load_config
 from course_kb.embedding import get_embedder
 from course_kb.manifest import Manifest, manifest_path, read_manifest, write_manifest
-from course_kb.parsing import get_parser_for
+from course_kb.parsing import ParsedDocument, get_parser_for
+from course_kb.records import ChunkRecord
 from course_kb.store import CourseStore
 
 
@@ -111,6 +113,17 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             f"'{course_id}' (total: {store.count()})"
         )
         return 0
+
+    # Warn (non-fatal) about chunks likely to exceed a token-limited embedder's
+    # budget; a real embedder would silently truncate their tails.
+    oversize = [r for r in new_records if estimate_tokens(r.text) > cfg.warn_chunk_tokens]
+    if oversize:
+        shown = ", ".join(r.id for r in oversize[:5]) + (" ..." if len(oversize) > 5 else "")
+        print(
+            f"warning: {len(oversize)} chunk(s) exceed ~{cfg.warn_chunk_tokens} tokens "
+            f"and may be truncated by a token-limited embedder: {shown}",
+            file=sys.stderr,
+        )
 
     # Embed (one vector per chunk), then store.
     vectors = embedder.embed([r.text for r in new_records])
@@ -207,6 +220,9 @@ def cmd_chunks(args: argparse.Namespace) -> int:
         added_at=_now_iso(),
     )
 
+    if args.report:
+        return _print_chunk_report(path, doc, records, cfg)
+
     payload = [
         {
             "id": r.id,
@@ -221,6 +237,30 @@ def cmd_chunks(args: argparse.Namespace) -> int:
     ]
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     print(f"\n{len(records)} chunk(s) from {path.name}", file=sys.stderr)
+    return 0
+
+
+def _print_chunk_report(
+    path: Path, doc: ParsedDocument, records: list[ChunkRecord], cfg: Config
+) -> int:
+    """Print a health summary for a parsed+chunked file — the 'is this file healthy' gate."""
+    kept = keep_elements(doc.elements, cfg)
+    dropped = len(doc.elements) - len(kept)
+    lengths = sorted(len(r.text) for r in records)
+    titled = sum(1 for r in records if r.title)
+    oversize = sum(1 for r in records if estimate_tokens(r.text) > cfg.warn_chunk_tokens)
+    mode = "slide" if kept and is_slide_deck(kept) else ("prose" if kept else "empty")
+    pct_titled = round(100 * titled / len(records)) if records else 0
+
+    print(f"file:              {path.name}")
+    print(f"mode:              {mode}")
+    print(f"pages parsed:      {len(doc.elements)}")
+    print(f"near-empty pages:  {dropped} dropped (< {cfg.min_element_chars} non-space chars)")
+    print(f"chunks:            {len(records)}")
+    print(f"titled chunks:     {titled}/{len(records)} ({pct_titled}%)")
+    if lengths:
+        print(f"chunk chars:       min {lengths[0]} / median {int(statistics.median(lengths))} / max {lengths[-1]}")
+    print(f"oversize chunks:   {oversize} (> ~{cfg.warn_chunk_tokens} tokens; may truncate when embedded)")
     return 0
 
 
@@ -260,6 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_chunks.add_argument("course_id")
     p_chunks.add_argument("path")
+    p_chunks.add_argument(
+        "--report",
+        action="store_true",
+        help="Print a health summary instead of per-chunk JSON.",
+    )
     p_chunks.set_defaults(func=cmd_chunks)
 
     return parser

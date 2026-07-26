@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from course_kb.cli import main
@@ -84,6 +85,30 @@ def test_pdf_ingest_and_read_back(tmp_path, monkeypatch):
     assert r.char_range is not None
     assert r.content_hash
     assert r.vector is not None and len(r.vector) == 64  # dummy embedder dims survive
+
+
+def test_chunks_report_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["chunks", "C", str(FIXTURES / "scanned.pdf"), "--report"]) == 0
+    out = capsys.readouterr().out
+    assert "mode:" in out and "chunk chars:" not in out  # empty file: no length line
+    assert "2 dropped" in out  # both near-empty pages dropped
+    assert re.search(r"chunks:\s+0", out)
+
+
+def test_oversize_chunk_warns_and_stores_untruncated(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init-course", "C"]) == 0
+    big = "```\n" + "\n".join(f"row_{i} = compute({i})" for i in range(300)) + "\n```"
+    listing = tmp_path / "listing.txt"
+    listing.write_text(big, encoding="utf-8")
+
+    assert main(["ingest", "C", str(listing), "--category", "code"]) == 0
+    assert "exceed" in capsys.readouterr().err  # oversize warning on stderr
+
+    texts = [r.text for r in _open_store(tmp_path, "C").get_all()]
+    assert any(len(t) > 1000 for t in texts)  # the big block stored whole, not truncated
+    assert all(t.count("```") == 2 for t in texts if "```" in t)
 
 
 def test_chunks_command_prints_json_without_storing(tmp_path, monkeypatch, capsys):

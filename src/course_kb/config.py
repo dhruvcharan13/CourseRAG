@@ -24,10 +24,17 @@ class Config:
     root: Path = Path("course-kb")
     embedder: str = "dummy"
 
-    # Chunking placeholders (used by later phases; kept here so config is stable).
     chunk_size: int = 1000
+    # Currently unread: the chunker derives prose overlap from its own OVERLAP_RATIO
+    # (~12% of chunk_size) rather than an absolute char count. Kept for config stability.
     chunk_overlap: int = 200
     min_chunk_chars: int = 50
+    # Drop parsed elements with fewer non-whitespace chars than this (scanned /
+    # image-only pages extract to a few stray chars and would become junk chunks).
+    min_element_chars: int = 10
+    # Chunks whose estimated token count exceeds this are flagged (a real embedder
+    # like MiniLM truncates at ~256 tokens); tokens are approximated as chars / 4.
+    warn_chunk_tokens: int = 256
 
     @property
     def courses_dir(self) -> Path:

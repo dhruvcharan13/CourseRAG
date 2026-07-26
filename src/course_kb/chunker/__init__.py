@@ -21,13 +21,34 @@ import statistics
 from dataclasses import dataclass
 
 from course_kb.config import Config
-from course_kb.parsing import ParsedDocument
+from course_kb.parsing import ParsedDocument, ParsedElement
 from course_kb.records import ChunkRecord
 
 # A page whose median word count is at or below this is treated as a slide.
 SLIDE_WORDS_PER_PAGE = 100
 # Prose overlap as a fraction of chunk_size (the approved ~10-15% target).
 OVERLAP_RATIO = 0.12
+
+
+def nonspace_len(text: str) -> int:
+    """Number of non-whitespace characters in ``text``."""
+    return len("".join((text or "").split()))
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token) for token-budget warnings."""
+    return (len(text) + 3) // 4
+
+
+def keep_elements(elements: list[ParsedElement], cfg: Config) -> list[ParsedElement]:
+    """Elements with enough real text to be worth chunking.
+
+    A scanned or image-only page extracts to "" or a few stray characters, which would
+    otherwise become a junk chunk and embed to a meaningless vector. Shared with the
+    ``--report`` gate so the report can't drift from what the chunker actually keeps.
+    """
+    return [e for e in elements if nonspace_len(e.text or "") >= cfg.min_element_chars]
+
 
 # Spans that must never be split mid-block. (pattern, flags) pairs.
 _PROTECTED_PATTERNS: list[tuple[str, int]] = [
@@ -40,6 +61,11 @@ _PROTECTED_PATTERNS: list[tuple[str, int]] = [
 
 _NUMBERED_HEADING = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z]")
 _MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+\S")
+# A heading is a short label. This length cap distinguishes a section heading
+# ("4.1 Definitions") from a numbered list/problem item ("1. For the graphs ...")
+# and from a table-of-contents leader line ("4.10 Bridges . . . . 121").
+_MAX_HEADING_CHARS = 80
+_MAX_HEADING_WORDS = 12
 # A sentence end needs a letter before the punctuation so enumerators ("2.") and
 # decimals ("3.14") are not mistaken for sentence boundaries.
 _SENTENCE_END = re.compile(r"(?<=[A-Za-z])[.!?][)\"']?\s")
@@ -66,11 +92,11 @@ def chunk_document(
     added_at: str,
 ) -> list[ChunkRecord]:
     """Turn a parsed document into deterministic, fully-populated chunk records."""
-    elements = [e for e in doc.elements if (e.text or "").strip()]
+    elements = keep_elements(doc.elements, cfg)
     if not elements:
         return []
 
-    if _is_slide_deck(elements):
+    if is_slide_deck(elements):
         sections = [
             _Section(source=e.text, start=0, end=len(e.text), page=e.page, title=e.title)
             for e in elements
@@ -114,7 +140,8 @@ def chunk_document(
 # --------------------------------------------------------------------------- #
 
 
-def _is_slide_deck(elements) -> bool:
+def is_slide_deck(elements) -> bool:
+    """True when the document reads as a slide deck (little text per page)."""
     words_per_page = [len((e.text or "").split()) for e in elements]
     return statistics.median(words_per_page) <= SLIDE_WORDS_PER_PAGE
 
@@ -147,22 +174,17 @@ def _split_sections(element) -> list[_Section]:
 
 
 def _is_heading(line: str) -> bool:
+    """A heading is a numbered (``1.2 Foo``) or markdown (``## Foo``) line.
+
+    Free-form Title-Case / ALL-CAPS detection was deliberately dropped: on real
+    PDFs it fired on figure labels ("Main St") and running headers, sharding pages
+    into micro-sections. Un-numbered headings are instead surfaced via the parser's
+    font-based per-page title, which seeds the leading section.
+    """
     s = line.strip()
-    if not s:
+    if not s or len(s) > _MAX_HEADING_CHARS or len(s.split()) > _MAX_HEADING_WORDS:
         return False
-    if _MARKDOWN_HEADING.match(s) or _NUMBERED_HEADING.match(s):
-        return True
-    if len(s) > 80 or s.endswith((".", ",", ";", ":")):
-        return False
-    words = s.split()
-    if not 1 <= len(words) <= 12:
-        return False
-    if s.isupper() and any(c.isalpha() for c in s):
-        return True
-    if len(words) >= 2:
-        capitalized = sum(1 for w in words if w[:1].isupper())
-        return capitalized >= len(words) - 1
-    return False
+    return bool(_MARKDOWN_HEADING.match(s) or _NUMBERED_HEADING.match(s))
 
 
 # --------------------------------------------------------------------------- #

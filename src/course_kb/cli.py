@@ -17,7 +17,7 @@ from pathlib import Path
 from course_kb import __version__
 from course_kb.chunker import chunk_document, estimate_tokens, is_slide_deck, keep_elements
 from course_kb.config import Config, load_config
-from course_kb.embedding import get_embedder
+from course_kb.embedding import Embedder, get_embedder
 from course_kb.manifest import Manifest, manifest_path, read_manifest, write_manifest
 from course_kb.parsing import ParsedDocument, get_parser_for
 from course_kb.records import ChunkRecord
@@ -30,6 +30,10 @@ def _now_iso() -> str:
 
 def _course_dir(cfg: Config, course_id: str) -> Path:
     return cfg.courses_dir / course_id
+
+
+def _is_dummy(model_id: str) -> bool:
+    return model_id.startswith("dummy-")
 
 
 # --------------------------------------------------------------------------- #
@@ -46,6 +50,10 @@ def cmd_init_course(args: argparse.Namespace) -> int:
         print(f"Course '{course_id}' already exists at {course_dir}", file=sys.stderr)
         return 1
 
+    # Resolve the embedder first: it fixes the course's vector width, and if it is
+    # unavailable (missing extra, unknown name) nothing should be created at all.
+    embedder = get_embedder(cfg.embedder, cfg)
+
     # Folder tree.
     (course_dir / "raw").mkdir(parents=True, exist_ok=True)
     cfg.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -54,7 +62,6 @@ def cmd_init_course(args: argparse.Namespace) -> int:
     (course_dir / "COURSE.md").write_text("", encoding="utf-8")
 
     # Empty LanceDB table, sized to the embedder's dimensions.
-    embedder = get_embedder(cfg.embedder, cfg)
     CourseStore.open_or_create(course_dir, embedder.dims)
 
     # Manifest recording how this course was built.
@@ -70,6 +77,12 @@ def cmd_init_course(args: argparse.Namespace) -> int:
 
     print(f"Initialized course '{course_id}' at {course_dir}")
     print(f"  embedder: {embedder.model_id} (dims={embedder.dims})")
+    if _is_dummy(embedder.model_id):
+        print(
+            "note: dummy vectors carry no semantic meaning. For real embeddings:\n"
+            '  pip install -e ".[local]"   (or set embedder = "minilm" in config.toml)',
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -87,6 +100,18 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         print(f"No such file: {path}", file=sys.stderr)
         return 1
 
+    # A course's embedding model is fixed at init-course: vectors from different
+    # models are not comparable, and a table's vector width cannot change. Check
+    # this before parsing, embedding, or opening the table, so a mismatched run
+    # changes nothing on disk.
+    manifest = read_manifest(course_dir)
+    embedder = get_embedder(cfg.embedder, cfg)
+    if (embedder.model_id, embedder.dims) != (manifest.embedding_model, manifest.dims):
+        _print_embedder_mismatch(course_id, course_dir, manifest, embedder)
+        return 1
+
+    store = CourseStore.open_or_create(course_dir, manifest.dims)
+
     parser = get_parser_for(path)
     doc = parser.parse(path)
 
@@ -99,9 +124,6 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         cfg=cfg,
         added_at=added_at,
     )
-
-    embedder = get_embedder(cfg.embedder, cfg)
-    store = CourseStore.open_or_create(course_dir, embedder.dims)
 
     # Skip chunks already stored for THIS file (by content hash) so re-ingest is
     # a no-op, while identical slides shared across files are kept per file.
@@ -131,8 +153,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         record.vector = vector
     store.add(new_records)
 
-    # Update the manifest.
-    manifest = read_manifest(course_dir)
+    # Update the manifest (read before the embedder check above).
     if args.category not in manifest.categories:
         manifest.categories.append(args.category)
     if path.name not in manifest.files:
@@ -145,6 +166,27 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         f"'{course_id}' (total: {store.count()})"
     )
     return 0
+
+
+def _print_embedder_mismatch(
+    course_id: str, course_dir: Path, manifest: Manifest, embedder: Embedder
+) -> None:
+    """Explain an embedder/course mismatch and how to fix it. Nothing was written."""
+    print(
+        f"error: embedder mismatch for course '{course_id}' — nothing was ingested.\n"
+        f"  course was built with: {manifest.embedding_model} (dims={manifest.dims})\n"
+        f"  current config selects: {embedder.model_id} (dims={embedder.dims})\n"
+        f"Vectors from different models are not comparable, and a course's vector width "
+        f"is fixed when its table is created.\n"
+        f"Either restore the original embedder in config.toml, or rebuild the course "
+        f"from your source files:\n"
+        f"  rm -rf {course_dir}\n"
+        f"  kb init-course {course_id}\n"
+        f"  kb ingest {course_id} <file> --category <category>   # for each file",
+        file=sys.stderr,
+    )
+    if manifest.files:
+        print(f"Files to re-ingest: {', '.join(manifest.files)}", file=sys.stderr)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -315,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ValueError, FileNotFoundError, NotImplementedError) as exc:
+    except (ValueError, FileNotFoundError, NotImplementedError, ImportError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

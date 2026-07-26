@@ -22,7 +22,14 @@ class Config:
     """
 
     root: Path = Path("course-kb")
-    embedder: str = "dummy"
+    # "auto" picks the real local model when sentence-transformers is installed and
+    # falls back to the dummy otherwise, so both installs work with no config file.
+    # Also accepts "dummy", "minilm"/"local", or a HuggingFace model id.
+    embedder: str = "auto"
+    # Texts per forward pass when embedding a course's worth of chunks.
+    embed_batch_size: int = 32
+    # Where downloaded embedding models are cached; defaults to ``root / "models"``.
+    cache_dir: Path | None = None
 
     chunk_size: int = 1000
     # Currently unread: the chunker derives prose overlap from its own OVERLAP_RATIO
@@ -46,6 +53,11 @@ class Config:
         """Directory holding retired courses (populated in a later phase)."""
         return self.root / "archive"
 
+    @property
+    def models_dir(self) -> Path:
+        """Cache directory for downloaded embedding models."""
+        return self.cache_dir if self.cache_dir is not None else self.root / "models"
+
 
 def load_config(path: Path | None = None) -> Config:
     """Load configuration.
@@ -64,6 +76,7 @@ def load_config(path: Path | None = None) -> Config:
 
     known = {f.name for f in fields(Config)}
     kwargs: dict[str, object] = {k: v for k, v in data.items() if k in known}
-    if "root" in kwargs:
-        kwargs["root"] = Path(str(kwargs["root"]))
+    for key in ("root", "cache_dir"):
+        if kwargs.get(key) is not None:
+            kwargs[key] = Path(str(kwargs[key])).expanduser()
     return Config(**kwargs)

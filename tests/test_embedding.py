@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from course_kb.config import Config
-from course_kb.embedding import Embedder, get_embedder
+from course_kb.embedding import Embedder, get_embedder, resolve_embedder_name
+from course_kb.embedding import sentence_transformer as st
 from course_kb.embedding.dummy import DummyEmbedder
 
 
@@ -43,3 +44,33 @@ def test_factory_returns_dummy_and_satisfies_protocol():
 def test_factory_rejects_unknown_embedder():
     with pytest.raises(NotImplementedError):
         get_embedder("openai", Config())
+
+
+# --------------------------------------------------------------------------- #
+# "auto" resolution
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_prefers_local_model_when_installed(monkeypatch):
+    monkeypatch.setattr(st, "is_available", lambda: True)
+    assert resolve_embedder_name("auto") == "minilm"
+
+
+def test_auto_falls_back_to_dummy_without_the_extra(monkeypatch):
+    monkeypatch.setattr(st, "is_available", lambda: False)
+    assert resolve_embedder_name("auto") == "dummy"
+    assert isinstance(get_embedder("auto", Config()), DummyEmbedder)
+
+
+@pytest.mark.parametrize(
+    "name", ["dummy", "minilm", "local", "sentence-transformers/all-MiniLM-L6-v2"]
+)
+def test_explicit_names_pass_through_resolution(name):
+    assert resolve_embedder_name(name) == name
+
+
+def test_requesting_a_real_model_without_the_extra_raises_importerror(monkeypatch):
+    # A missing extra must fail before anything is created, with an install hint.
+    monkeypatch.setattr(st, "is_available", lambda: False)
+    with pytest.raises(ImportError, match=r"\[local\]"):
+        get_embedder("minilm", Config())

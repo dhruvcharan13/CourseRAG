@@ -7,7 +7,7 @@ import json
 from course_kb.cli import main
 
 
-def test_init_course_creates_expected_paths(tmp_path, monkeypatch):
+def test_init_course_creates_expected_paths(tmp_path, monkeypatch, dummy_config):
     monkeypatch.chdir(tmp_path)
 
     assert main(["init-course", "CS240-W26"]) == 0
@@ -32,14 +32,14 @@ def test_init_course_creates_expected_paths(tmp_path, monkeypatch):
     assert manifest["last_indexed"] is None
 
 
-def test_init_course_is_not_clobbered(tmp_path, monkeypatch):
+def test_init_course_is_not_clobbered(tmp_path, monkeypatch, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "CS240-W26"]) == 0
     # Re-initializing an existing course is refused, not silently overwritten.
     assert main(["init-course", "CS240-W26"]) == 1
 
 
-def test_ingest_pipeline_stores_chunks(tmp_path, monkeypatch):
+def test_ingest_pipeline_stores_chunks(tmp_path, monkeypatch, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "CS240-W26"]) == 0
 
@@ -55,6 +55,21 @@ def test_ingest_pipeline_stores_chunks(tmp_path, monkeypatch):
     assert manifest["files"] == ["sample.txt"]
     assert manifest["categories"] == ["notes"]
     assert manifest["last_indexed"] is not None
+
+
+def test_unavailable_embedder_creates_nothing(tmp_path, monkeypatch, capsys):
+    # An unusable embedder (missing [local] extra, unknown name) must not leave a
+    # manifest-less course behind for `kb list` to show.
+    monkeypatch.chdir(tmp_path)
+
+    def _unavailable(name, cfg):
+        raise ImportError('sentence-transformers is not installed. pip install -e ".[local]"')
+
+    monkeypatch.setattr("course_kb.cli.get_embedder", _unavailable)
+
+    assert main(["init-course", "CS240-W26"]) == 1
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "course-kb" / "courses" / "CS240-W26").exists()
 
 
 def test_search_stub(tmp_path, monkeypatch, capsys):

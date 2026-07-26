@@ -53,13 +53,27 @@ class CourseStore:
 
     @classmethod
     def open_or_create(cls, course_dir: Path, dims: int) -> "CourseStore":
-        """Open the course's ``index`` table, creating it empty if absent."""
+        """Open the course's ``index`` table, creating it empty if absent.
+
+        Raises:
+            ValueError: if an existing table's vector width differs from ``dims``.
+                A table's width is fixed at creation, so this means the caller is
+                using a different embedding model than the one the course was built
+                with — caught here rather than as an opaque Arrow error mid-insert.
+        """
         course_dir.mkdir(parents=True, exist_ok=True)
         db = lancedb.connect(course_dir)
         # A course DB only ever holds the single "index" table, so reading the
         # (unpaginated) table list here is safe.
         if TABLE_NAME in db.list_tables().tables:
             table = db.open_table(TABLE_NAME)
+            stored_dims = table.schema.field("vector").type.list_size
+            if stored_dims != dims:
+                raise ValueError(
+                    f"Course table at {course_dir} stores {stored_dims}-dim vectors, but "
+                    f"{dims}-dim vectors were requested. Vector width is fixed when the "
+                    f"table is created; rebuild the course to change embedding model."
+                )
         else:
             table = db.create_table(TABLE_NAME, schema=_build_schema(dims))
         return cls(table, dims)

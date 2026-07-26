@@ -12,6 +12,9 @@ dependencies = ["lancedb", "pymupdf"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Real local embeddings. Kept optional (and lazily imported) so the core install
+# stays lean and the DummyEmbedder path needs nothing beyond the stdlib.
+local = ["sentence-transformers>=3.0"]
 
 [project.scripts]
 kb = "course_kb.cli:main"

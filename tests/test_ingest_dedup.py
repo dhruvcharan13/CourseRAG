@@ -18,7 +18,7 @@ def _open_store(tmp_path: Path, course: str) -> CourseStore:
     return CourseStore.open_or_create(course_dir, manifest.dims)
 
 
-def test_reingesting_unchanged_file_adds_no_rows(tmp_path, monkeypatch, capsys):
+def test_reingesting_unchanged_file_adds_no_rows(tmp_path, monkeypatch, capsys, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "C"]) == 0
     note = tmp_path / "note.txt"
@@ -34,7 +34,7 @@ def test_reingesting_unchanged_file_adds_no_rows(tmp_path, monkeypatch, capsys):
     assert _open_store(tmp_path, "C").count() == first  # unchanged
 
 
-def test_changed_file_adds_rows(tmp_path, monkeypatch):
+def test_changed_file_adds_rows(tmp_path, monkeypatch, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "C"]) == 0
     note = tmp_path / "note.txt"
@@ -48,7 +48,7 @@ def test_changed_file_adds_rows(tmp_path, monkeypatch):
     assert _open_store(tmp_path, "C").count() > before
 
 
-def test_identical_text_in_different_files_is_kept(tmp_path, monkeypatch):
+def test_identical_text_in_different_files_is_kept(tmp_path, monkeypatch, dummy_config):
     # Dedup is scoped per source file, so a slide shared across two files is
     # stored once for each (preserving per-file provenance).
     monkeypatch.chdir(tmp_path)
@@ -68,7 +68,7 @@ def test_identical_text_in_different_files_is_kept(tmp_path, monkeypatch):
     assert {r.source_file for r in store.get_all()} == {"module05.txt", "module06.txt"}
 
 
-def test_pdf_ingest_and_read_back(tmp_path, monkeypatch):
+def test_pdf_ingest_and_read_back(tmp_path, monkeypatch, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "C"]) == 0
 
@@ -96,7 +96,7 @@ def test_chunks_report_summary(tmp_path, monkeypatch, capsys):
     assert re.search(r"chunks:\s+0", out)
 
 
-def test_oversize_chunk_warns_and_stores_untruncated(tmp_path, monkeypatch, capsys):
+def test_oversize_chunk_warns_and_stores_untruncated(tmp_path, monkeypatch, capsys, dummy_config):
     monkeypatch.chdir(tmp_path)
     assert main(["init-course", "C"]) == 0
     big = "```\n" + "\n".join(f"row_{i} = compute({i})" for i in range(300)) + "\n```"

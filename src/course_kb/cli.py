@@ -136,16 +136,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # Warn (non-fatal) about chunks likely to exceed a token-limited embedder's
-    # budget; a real embedder would silently truncate their tails.
-    oversize = [r for r in new_records if estimate_tokens(r.text) > cfg.warn_chunk_tokens]
-    if oversize:
-        shown = ", ".join(r.id for r in oversize[:5]) + (" ..." if len(oversize) > 5 else "")
-        print(
-            f"warning: {len(oversize)} chunk(s) exceed ~{cfg.warn_chunk_tokens} tokens "
-            f"and may be truncated by a token-limited embedder: {shown}",
-            file=sys.stderr,
-        )
+    # Warn (non-fatal) about chunks the embedder will truncate.
+    _warn_oversize(embedder, new_records, cfg)
 
     # Embed (one vector per chunk), then store.
     vectors = embedder.embed([r.text for r in new_records])
@@ -168,6 +160,50 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _shown_ids(records: list[ChunkRecord], limit: int = 5) -> str:
+    return ", ".join(r.id for r in records[:limit]) + (" ..." if len(records) > limit else "")
+
+
+def _warn_oversize(embedder: Embedder, records: list[ChunkRecord], cfg: Config) -> None:
+    """Warn about chunks whose tails the embedder will drop.
+
+    An embedder that can tokenize (the real local model) gives an exact count, and the
+    consequence is concrete: an oversize chunk's vector is identical to the vector of
+    its head, so its tail is unsearchable even though the stored text and citations
+    cover the whole chunk.
+
+    Without a tokenizer, fall back to ``estimate_tokens`` (~4 chars/token). Measured over
+    6.7k real chunks that proxy misses ~94% of actual truncations, because notation-dense
+    text (math, SQL, code) can run past 1 token per character — so it is reported as the
+    estimate it is. See docs/chunking-robustness.md.
+    """
+    count_tokens = getattr(embedder, "count_tokens", None)
+    if count_tokens is None:
+        oversize = [r for r in records if estimate_tokens(r.text) > cfg.warn_chunk_tokens]
+        if oversize:
+            print(
+                f"warning: {len(oversize)} chunk(s) exceed ~{cfg.warn_chunk_tokens} tokens by "
+                f"character estimate and may be truncated by a token-limited embedder "
+                f"(estimate only; under-counts math/code): {_shown_ids(oversize)}",
+                file=sys.stderr,
+            )
+        return
+
+    limit = embedder.max_input_tokens
+    counts = count_tokens([r.text for r in records])
+    oversize = [(r, n) for r, n in zip(records, counts) if n > limit]
+    if not oversize:
+        return
+    worst = max(n for _, n in oversize)
+    print(
+        f"warning: {len(oversize)} of {len(records)} chunk(s) exceed the model's "
+        f"{limit}-token limit (largest: {worst} tokens). Only their first ~{limit} tokens "
+        f"are embedded, so the tail of each is not searchable; the full text is still "
+        f"stored and cited: {_shown_ids([r for r, _ in oversize])}",
+        file=sys.stderr,
+    )
+
+
 def _print_embedder_mismatch(
     course_id: str, course_dir: Path, manifest: Manifest, embedder: Embedder
 ) -> None:
@@ -187,6 +223,58 @@ def _print_embedder_mismatch(
     )
     if manifest.files:
         print(f"Files to re-ingest: {', '.join(manifest.files)}", file=sys.stderr)
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Remove every chunk that came from one source file.
+
+    Deliberately does **not** construct an embedder: a vector is a pure function of
+    chunk text, so deletion needs no model. That also means a course can be pruned even
+    when its embedding model is unavailable (missing extra, or a course built with a
+    model the current config no longer selects).
+    """
+    cfg = load_config()
+    course_id = args.course_id
+    course_dir = _course_dir(cfg, course_id)
+
+    if not manifest_path(course_dir).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return 1
+
+    manifest = read_manifest(course_dir)
+    store = CourseStore.open_or_create(course_dir, manifest.dims)
+
+    removed = store.delete_source(args.file)
+    if removed == 0 and args.file not in manifest.files:
+        known = ", ".join(manifest.files) or "(none)"
+        print(
+            f"error: no chunks from '{args.file}' in course '{course_id}'. "
+            f"Names must match exactly.\nFiles in this course: {known}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # The manifest's file and category lists are derived from the rows, so recompute
+    # rather than patch: a category may have been used only by the deleted file.
+    # Filtering (instead of rebuilding) preserves the existing ingest order.
+    remaining_categories = set(store.categories())
+    manifest.files = [f for f in manifest.files if f != args.file]
+    manifest.categories = [c for c in manifest.categories if c in remaining_categories]
+    # last_indexed records when content was last *indexed*; a deletion does not index.
+    write_manifest(course_dir, manifest)
+
+    if removed == 0:
+        print(
+            f"No stored chunks from {args.file}; removed its stale manifest entry "
+            f"in '{course_id}' (total: {store.count()})"
+        )
+        return 0
+
+    print(
+        f"Deleted {removed} chunk(s) from {args.file} in '{course_id}' "
+        f"(remaining: {store.count()})"
+    )
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -302,7 +390,10 @@ def _print_chunk_report(
     print(f"titled chunks:     {titled}/{len(records)} ({pct_titled}%)")
     if lengths:
         print(f"chunk chars:       min {lengths[0]} / median {int(statistics.median(lengths))} / max {lengths[-1]}")
-    print(f"oversize chunks:   {oversize} (> ~{cfg.warn_chunk_tokens} tokens; may truncate when embedded)")
+    print(
+        f"oversize chunks:   {oversize} (est. > ~{cfg.warn_chunk_tokens} tokens from chars/4; "
+        f"a rough hint — ingest counts real tokens)"
+    )
     return 0
 
 
@@ -325,6 +416,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("path")
     p_ingest.add_argument("--category", required=True, help="Category label for the chunks (e.g. notes).")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_delete = sub.add_parser(
+        "delete", help="Remove all chunks that came from one source file."
+    )
+    p_delete.add_argument("course_id")
+    p_delete.add_argument("file", help="Source file name as stored (see kb info).")
+    p_delete.set_defaults(func=cmd_delete)
 
     p_list = sub.add_parser("list", help="List active and archived courses.")
     p_list.set_defaults(func=cmd_list)

@@ -30,10 +30,17 @@ install and `kb --help` never pay for it.
 ```bash
 kb init-course CS240-W26                 # create an isolated course store
 kb ingest CS240-W26 sample.txt --category notes   # parse -> chunk -> embed -> store
+kb delete CS240-W26 sample.txt           # remove every chunk from one source file
 kb info CS240-W26                        # manifest + chunk count
 kb list                                  # active and archived courses
 kb search ...                            # not implemented yet (Phase 3)
 ```
+
+`delete` takes the file name exactly as `kb info` lists it. It loads no embedding
+model — a vector is a pure function of chunk text, so removing rows costs no inference
+— which also means a course can be pruned even when its embedding model is
+unavailable. It prunes old table versions to give the disk space back, so a delete
+cannot be rolled back; re-ingesting the source file restores it exactly.
 
 ## On-disk layout
 

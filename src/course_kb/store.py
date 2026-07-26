@@ -9,10 +9,12 @@ Search is Phase 3; :meth:`CourseStore.search` is intentionally a stub.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import lancedb
 import pyarrow as pa
+from lancedb.expr import col, lit
 
 from course_kb.records import ChunkRecord
 
@@ -116,6 +118,46 @@ class CourseStore:
     def get_all(self) -> list[ChunkRecord]:
         """Read every stored row back as a :class:`ChunkRecord`."""
         return [ChunkRecord.from_dict(row) for row in self._table.to_arrow().to_pylist()]
+
+    def _scan(self, columns: list[str]) -> pa.Table:
+        """Read whole columns without materializing the vector column.
+
+        ``search()`` with no query vector is a plain scan, and ``limit(0)`` means no
+        limit (the default is 10). Projecting matters because the vector column dwarfs
+        every other field — 0.7MB of a 1.2MB scan on a 483-row course.
+        """
+        return self._table.search().select(columns).limit(0).to_arrow()
+
+    def source_files(self) -> list[str]:
+        """Distinct ``source_file`` values currently stored, in first-seen order."""
+        return list(dict.fromkeys(self._scan(["source_file"]).column("source_file").to_pylist()))
+
+    def categories(self) -> list[str]:
+        """Distinct ``category`` values currently stored, in first-seen order."""
+        return list(dict.fromkeys(self._scan(["category"]).column("category").to_pylist()))
+
+    def delete_source(self, source_file: str) -> int:
+        """Delete every chunk that came from ``source_file``; return rows removed.
+
+        Vectors are a pure function of chunk text, so removing a document costs no
+        embedding work at all — no model is loaded on this path.
+
+        The filter is a typed expression rather than an SQL string, so a filename
+        containing a quote (``Chapter 1's Notes.pdf``) is matched correctly instead of
+        malforming the predicate.
+        """
+        before = self._table.count_rows()
+        self._table.delete(col("source_file") == lit(source_file))
+        removed = before - self._table.count_rows()
+        if removed:
+            # A delete only tombstones rows. Compacting alone makes things *worse* —
+            # it writes merged files while the pre-delete version is still retained
+            # (measured: 5.9MB -> 8.9MB) — so prune old versions too and actually give
+            # the space back (-> 3.0MB). The cost is that the table can no longer be
+            # rolled back to before the delete; re-ingesting the source file restores
+            # it exactly, since chunk ids and vectors are derived from text.
+            self._table.optimize(cleanup_older_than=timedelta(0))
+        return removed
 
     def search(self, *args: object, **kwargs: object) -> object:
         """Retrieval — implemented in Phase 3."""

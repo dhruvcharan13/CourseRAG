@@ -84,6 +84,32 @@ class SentenceTransformerEmbedder:
             self._dims_from_lookup = False
             self.dims = _model_dims(self._ensure_model())
 
+    @property
+    def max_input_tokens(self) -> int:
+        """Word-piece budget per text. Longer texts are truncated at embed time.
+
+        MiniLM's budget is 256, and truncation is silent: the vector for an oversize
+        text is *bit-identical* to the vector for its first ~256 word-pieces, so the
+        tail contributes nothing at all.
+        """
+        return int(self._ensure_model().max_seq_length)
+
+    def count_tokens(self, texts: list[str]) -> list[int]:
+        """Real word-piece counts (with special tokens), so callers can see truncation.
+
+        The character-based ``estimate_tokens`` proxy under-counts notation-dense text
+        (math, SQL, code) by up to 4x, which is exactly the content most likely to be
+        truncated. This uses the model's own tokenizer, and is cheap next to the
+        forward pass it precedes.
+        """
+        if not texts:
+            return []
+        tokenizer = self._ensure_model().tokenizer
+        # verbose=False: transformers otherwise logs its own over-length notice, which
+        # is the very thing the caller is about to report properly.
+        encoded = tokenizer(texts, add_special_tokens=True, truncation=False, verbose=False)
+        return [len(ids) for ids in encoded["input_ids"]]
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed ``texts`` in batches. Vectors are L2-normalized to length 1."""
         if not texts:

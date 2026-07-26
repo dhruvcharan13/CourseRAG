@@ -11,7 +11,7 @@ health gate on any file with `kb chunks <course> <path> --report`.
 | 1 | Drop elements below `min_element_chars` (10) non-whitespace chars | TemplateMethod leaked an 8-char junk chunk from a near-empty page |
 | 2 | Reading order: top-down by default, column-major **only on detected two-column pages** | see below — an unguarded column sort reordered 235 of 404 real pages |
 | 3 | Documented + tested that `char_range` indexes the chunk **body**, not the title-prepended `text` | invariant `text.endswith(element_text[cs:ce])` |
-| 4 | Oversize awareness: `estimate_tokens ≈ chars/4`, warn on ingest, count in `--report` | Final Exam has 7 chunks > ~256 tokens |
+| 4 | Oversize awareness: `estimate_tokens ≈ chars/4`, warn on ingest, count in `--report` | Final Exam has 7 chunks > ~256 tokens — but see the Phase 2 addendum: the estimate misses 94% of real truncations, so ingest now counts real tokens |
 | 5 | Page-number/footer lines (`Page N of M`, `n/m`, roman) stripped and never chosen as title | Exam titled every chunk `"Page N of 28"` |
 | 6 | Narrow character fold: Latin ligatures + curly quotes → ASCII | `ﬁ` (U+FB01) ×270 in the Graph-Theory notes, so `deﬁnition` never matched a query typed `definition` |
 
@@ -92,6 +92,45 @@ quotes remaining, 11 matchable `definition`s, and `∑`×58 / `∏`×92 / `—`�
 | Consumption and Commodities | PHIL121 | slide | 37 | 6 | 31 | 68% | 0 | 343 |
 | a5 | CS240 | prose | 6 | 0 | 11 | 82% | 0 | 800 |
 | Graph theory | MATH239 | prose | 122 | 2 | 263 | 73% | 1 | 783 |
+
+## Phase 2 addendum — measured truncation vs the character estimate
+
+Phase 2 shipped the real embedder (all-MiniLM-L6-v2, 256 word-pieces), so "may be
+truncated" became measurable. Audited with the project's own parser + chunker over **54
+real PDFs → 6,733 chunks**, comparing `estimate_tokens` (chars/4) against the model's
+`BertTokenizer`:
+
+| Measure | Count | Share |
+|---|---:|---:|
+| Actually truncated by the model (real > 256 pieces) | 520 | 7.7% |
+| Flagged by the character estimate (est > 256) | 230 | 3.4% |
+| **Truncated but not flagged** (false negatives) | **490** | 94% of truncations |
+| Flagged but not truncated (false alarms) | 200 | 87% of warnings |
+
+The two sets overlap on 30 chunks. Real tokens per character run 0.116–1.167 (median
+0.222), so the chars/4 proxy over-counts ordinary prose and badly under-counts the
+notation-dense pages most at risk — `math239_s26_t2_prac.pdf::p4::c0` is 964 chars but
+**501 word-pieces**, because `{ n ∈ N : n ≡ 1 ( mod 3 ) }` is roughly one piece per glyph.
+On that one file the estimate flags 1 of 8 chunks; the tokenizer flags 6 of 8.
+
+**Truncation is silent and total.** Embedding that chunk's full 964 chars and embedding only
+its first 254 pieces (571 chars) produce **bit-identical vectors** (`max|diff| = 0.0`). The
+dropped 393 chars — a run of distinct answer keys, cosine 0.41 against the head — contribute
+nothing. So an oversize chunk is searchable only by its head, while its stored `text`,
+`char_range`, and page citation still claim the whole block. Median share of pieces dropped
+across the 520: **11%**; worst: **49%**.
+
+**What shipped instead of a chunker change:** ingest now counts real tokens (the tokenizer is
+already loaded, so it is nearly free) and reports exactly what will be lost —
+`warning: 6 of 8 chunk(s) exceed the model's 256-token limit (largest: 501 tokens)...`.
+`chunks --report` keeps the chars/4 hint, relabelled as an estimate.
+
+**Why this is accepted for now:** 7.7% of chunks affected, median 11% of pieces lost, and the
+loss concentrates in reference-style pages (answer keys, SQL syntax tables, long proofs) whose
+heads still carry the topic — so retrieval degrades rather than breaks. The real fix is
+per-page mode selection plus splitting oversize atomic blocks at a token boundary, which
+collides with the "protected blocks are never split" rule and belongs with the mixed-mode work
+below. Until then the number is visible on every ingest instead of being an unmeasured unknown.
 
 ## Investigations
 

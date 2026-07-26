@@ -48,6 +48,21 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b)) / (_norm(a) * _norm(b))
 
 
+def _write_local_config(tmp_path: Path, monkeypatch) -> None:
+    """Chdir into a scratch dir configured for the real embedder.
+
+    ``cache_dir`` points at the shared HuggingFace cache so tests reuse an already
+    downloaded model instead of fetching one per run.
+    """
+    from huggingface_hub import constants
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.toml").write_text(
+        f'embedder = "minilm"\ncache_dir = {json.dumps(constants.HF_HUB_CACHE)}\n',
+        encoding="utf-8",
+    )
+
+
 def test_model_id_and_dims(embedder):
     assert embedder.model_id == DEFAULT_MODEL_ID
     assert embedder.dims == 384
@@ -105,17 +120,70 @@ def test_batch_size_is_configurable_and_order_preserving(embedder):
         assert max(abs(g - w) for g, w in zip(got, want)) < 1e-5
 
 
+# --------------------------------------------------------------------------- #
+# Token budget / truncation
+# --------------------------------------------------------------------------- #
+
+# Notation-dense text: ~1 word-piece per character, where chars/4 badly under-counts.
+MATH_HEAVY = "Let A = { n ∈ N : n ≡ 1 ( mod 3 ) } and B = { n ∈ N : n ≡ 2 ( mod 3 ) }. " * 12
+
+
+def test_max_input_tokens_is_the_models_budget(embedder):
+    assert embedder.max_input_tokens == 256
+
+
+def test_count_tokens_matches_the_tokenizer(embedder):
+    counts = embedder.count_tokens([SIMILAR_A, MATH_HEAVY])
+    assert counts[0] < 32  # one short sentence
+    assert counts[1] > embedder.max_input_tokens  # this one gets truncated
+    assert embedder.count_tokens([]) == []
+
+
+def test_char_estimate_undercounts_notation_dense_text(embedder):
+    # The reason ingest counts real tokens instead of trusting chars/4: this text is
+    # under the character-based threshold but well over the model's real budget.
+    from course_kb.chunker import estimate_tokens
+
+    (real,) = embedder.count_tokens([MATH_HEAVY])
+    assert estimate_tokens(MATH_HEAVY) < 256 < real
+
+
+def test_oversize_text_embeds_only_its_head(embedder):
+    """Truncation is silent and total: the tail contributes nothing to the vector."""
+    tokenizer = embedder._ensure_model().tokenizer
+    limit = embedder.max_input_tokens
+    ids = tokenizer(MATH_HEAVY, add_special_tokens=False, truncation=False, verbose=False)[
+        "input_ids"
+    ]
+    assert len(ids) > limit
+    head = tokenizer.decode(ids[: limit - 2])
+
+    full_vector, head_vector = embedder.embed([MATH_HEAVY, head])
+    assert max(abs(a - b) for a, b in zip(full_vector, head_vector)) == 0.0
+
+
+def test_cli_ingest_warns_with_real_token_counts(tmp_path, monkeypatch, capsys):
+    _write_local_config(tmp_path, monkeypatch)
+    assert main(["init-course", "C"]) == 0
+
+    listing = tmp_path / "proof.txt"
+    listing.write_text("```\n" + MATH_HEAVY + "\n```", encoding="utf-8")  # atomic block
+    assert main(["ingest", "C", str(listing), "--category", "notes"]) == 0
+
+    err = capsys.readouterr().err
+    assert "exceed the model's 256-token limit" in err
+    assert "not searchable" in err
+
+    # The stored text is still whole — only the vector is head-only.
+    records = CourseStore.open_or_create(
+        tmp_path / "course-kb" / "courses" / "C", 384
+    ).get_all()
+    assert any(MATH_HEAVY.strip() in r.text for r in records)
+
+
 def test_cli_ingest_stores_384_dim_unit_vectors(tmp_path, monkeypatch):
     """End to end: init-course records the real model, ingest stores real vectors."""
-    from huggingface_hub import constants
-
-    monkeypatch.chdir(tmp_path)
-    # Point the model cache at the shared HuggingFace cache so the test reuses an
-    # already-downloaded model instead of fetching one per run.
-    (tmp_path / "config.toml").write_text(
-        f'embedder = "minilm"\ncache_dir = {json.dumps(constants.HF_HUB_CACHE)}\n',
-        encoding="utf-8",
-    )
+    _write_local_config(tmp_path, monkeypatch)
 
     assert main(["init-course", "C"]) == 0
     course_dir = tmp_path / "course-kb" / "courses" / "C"

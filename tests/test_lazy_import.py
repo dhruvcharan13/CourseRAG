@@ -65,7 +65,7 @@ def test_constructing_the_local_embedder_does_not_import_the_model_stack():
             """
 from course_kb.config import Config
 from course_kb.embedding import get_embedder
-emb = get_embedder("minilm", Config())
+emb = get_embedder("local", Config())
 assert emb.dims == 384, emb.dims
 """
         )

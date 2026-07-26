@@ -53,7 +53,7 @@ def test_factory_rejects_unknown_embedder():
 
 def test_auto_prefers_local_model_when_installed(monkeypatch):
     monkeypatch.setattr(st, "is_available", lambda: True)
-    assert resolve_embedder_name("auto") == "minilm"
+    assert resolve_embedder_name("auto") == "local"
 
 
 def test_auto_falls_back_to_dummy_without_the_extra(monkeypatch):
@@ -63,14 +63,15 @@ def test_auto_falls_back_to_dummy_without_the_extra(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "name", ["dummy", "minilm", "local", "sentence-transformers/all-MiniLM-L6-v2"]
+    "name", ["dummy", "minilm", "local", "bge", "sentence-transformers/all-MiniLM-L6-v2"]
 )
 def test_explicit_names_pass_through_resolution(name):
     assert resolve_embedder_name(name) == name
 
 
-def test_requesting_a_real_model_without_the_extra_raises_importerror(monkeypatch):
+@pytest.mark.parametrize("name", ["local", "bge", "minilm"])
+def test_requesting_a_real_model_without_the_extra_raises_importerror(monkeypatch, name):
     # A missing extra must fail before anything is created, with an install hint.
     monkeypatch.setattr(st, "is_available", lambda: False)
     with pytest.raises(ImportError, match=r"\[local\]"):
-        get_embedder("minilm", Config())
+        get_embedder(name, Config())

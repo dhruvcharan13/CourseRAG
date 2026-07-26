@@ -1,7 +1,13 @@
 """Real local embeddings via sentence-transformers (the optional ``[local]`` extra).
 
 Semantics, no API key, no network after the first model download. The default is
-``all-MiniLM-L6-v2``: 384 dimensions, ~90MB, fast on CPU.
+``bge-small-en-v1.5``: 384 dimensions, a 512 word-piece window, ~130MB.
+
+The window is why it is the default rather than the faster ``all-MiniLM-L6-v2``.
+Measured on a real 220-chunk course deck, MiniLM's 256-piece limit truncated 40.9%
+of chunks, and for queries about the dropped tail it ranked the correct chunk *below*
+a random one. No chunk in the sampled corpus exceeds 512, so bge truncates nothing.
+See docs/chunking-robustness.md.
 
 Everything here is lazy. ``sentence_transformers`` (and therefore torch) is imported
 inside :meth:`SentenceTransformerEmbedder._ensure_model`, not at module import, so
@@ -20,9 +26,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
-__all__ = ["DEFAULT_MODEL_ID", "SentenceTransformerEmbedder", "is_available"]
+__all__ = ["DEFAULT_MODEL_ID", "MINILM_MODEL_ID", "SentenceTransformerEmbedder", "is_available"]
 
-DEFAULT_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_MODEL_ID = "BAAI/bge-small-en-v1.5"
+MINILM_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Output width per model, so `dims` is known without importing torch. Verified
 # against the real model the first time it loads, so a stale entry here raises

@@ -39,7 +39,7 @@ from course_kb.embedding import get_embedder
 
 texts = json.loads(sys.argv[1])
 batch_size = int(sys.argv[2])
-vectors = get_embedder("minilm", Config(embed_batch_size=batch_size)).embed(texts)
+vectors = get_embedder("local", Config(embed_batch_size=batch_size)).embed(texts)
 # Hash the exact float bit patterns: "identical" must mean identical, not "close".
 digests = [
     hashlib.sha256(b"".join(struct.pack("<d", x) for x in v)).hexdigest() for v in vectors
@@ -82,7 +82,7 @@ def test_vectors_are_bit_identical_within_a_process():
     from course_kb.config import Config
     from course_kb.embedding import get_embedder
 
-    embedder = get_embedder("minilm", Config())
+    embedder = get_embedder("local", Config())
 
     def digest(vector: list[float]) -> str:
         return hashlib.sha256(b"".join(struct.pack("<d", x) for x in vector)).hexdigest()

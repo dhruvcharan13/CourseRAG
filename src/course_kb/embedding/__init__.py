@@ -2,9 +2,9 @@
 
 An :class:`Embedder` maps texts to fixed-dimension vectors. Two implementations
 exist: the real local :class:`~course_kb.embedding.sentence_transformer.SentenceTransformerEmbedder`
-(the ``[local]`` extra) and the dependency-free, deterministic
-:class:`~course_kb.embedding.dummy.DummyEmbedder`. Either way there is no API key
-and no network after the model is cached.
+(the ``[local]`` extra, defaulting to bge-small-en-v1.5) and the dependency-free,
+deterministic :class:`~course_kb.embedding.dummy.DummyEmbedder`. Either way there is
+no API key and no network after the model is cached.
 
 The default name is ``"auto"``: the real model when sentence-transformers is
 installed, the dummy otherwise — so both installs work with no config file.
@@ -46,7 +46,7 @@ def resolve_embedder_name(name: str) -> str:
 
     from course_kb.embedding.sentence_transformer import is_available
 
-    return "minilm" if is_available() else "dummy"
+    return "local" if is_available() else "dummy"
 
 
 def get_embedder(name: str, cfg: Config) -> Embedder:
@@ -56,7 +56,8 @@ def get_embedder(name: str, cfg: Config) -> Embedder:
 
     * ``"auto"`` — the real local model if installed, else the dummy.
     * ``"dummy"`` — the dependency-free :class:`DummyEmbedder`.
-    * ``"minilm"`` / ``"local"`` — sentence-transformers all-MiniLM-L6-v2 (384-dim).
+    * ``"local"`` / ``"bge"`` — bge-small-en-v1.5 (384-dim, 512-token window).
+    * ``"minilm"`` — all-MiniLM-L6-v2 (384-dim, 256-token window; faster, truncates more).
     * any HuggingFace model id (contains ``"/"``) — that sentence-transformers model.
 
     Implementations are imported inside the branches so selecting the dummy never
@@ -75,17 +76,21 @@ def get_embedder(name: str, cfg: Config) -> Embedder:
 
     from course_kb.embedding.sentence_transformer import (
         DEFAULT_MODEL_ID,
+        MINILM_MODEL_ID,
         SentenceTransformerEmbedder,
     )
 
-    if resolved in ("minilm", "local"):
-        model_id = DEFAULT_MODEL_ID
+    aliases = {"local": DEFAULT_MODEL_ID, "bge": DEFAULT_MODEL_ID, "minilm": MINILM_MODEL_ID}
+
+    if resolved in aliases:
+        model_id = aliases[resolved]
     elif "/" in resolved:
         model_id = resolved
     else:
         raise NotImplementedError(
-            f"Embedder '{name}' is not available. Choose 'auto', 'dummy', 'minilm', "
-            f"or a HuggingFace model id like '{DEFAULT_MODEL_ID}'."
+            f"Embedder '{name}' is not available. Choose 'auto', 'dummy', "
+            f"{', '.join(repr(a) for a in aliases)}, or a HuggingFace model id "
+            f"like '{DEFAULT_MODEL_ID}'."
         )
 
     return SentenceTransformerEmbedder(

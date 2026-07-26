@@ -87,6 +87,28 @@ def test_pdf_ingest_and_read_back(tmp_path, monkeypatch, dummy_config):
     assert r.vector is not None and len(r.vector) == 64  # dummy embedder dims survive
 
 
+def test_ingesting_a_file_with_no_extractable_text_reports_clearly(
+    tmp_path, monkeypatch, capsys, dummy_config
+):
+    # An image-only scan yields zero chunks. That is not "already up to date" —
+    # it needs to be distinguishable from a successful no-op re-ingest.
+    monkeypatch.chdir(tmp_path)
+    assert main(["init-course", "C"]) == 0
+
+    assert main(["ingest", "C", str(FIXTURES / "scanned.pdf"), "--category", "slides"]) == 1
+
+    err = capsys.readouterr().err
+    assert "no chunks produced" in err
+    assert "OCR" in err
+    assert "2 page(s) parsed, 2 dropped" in err
+
+    # Nothing recorded: no rows, no file entry, still never indexed.
+    manifest = read_manifest(tmp_path / "course-kb" / "courses" / "C")
+    assert manifest.files == []
+    assert manifest.last_indexed is None
+    assert _open_store(tmp_path, "C").count() == 0
+
+
 def test_chunks_report_summary(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert main(["chunks", "C", str(FIXTURES / "scanned.pdf"), "--report"]) == 0

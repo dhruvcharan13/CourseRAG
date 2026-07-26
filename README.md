@@ -57,15 +57,34 @@ course-kb/                     # default root, overridable via config.toml
 
 ## Embeddings
 
-| `embedder` | Model | Dims | Needs |
-| --- | --- | --- | --- |
-| `auto` (default) | MiniLM if installed, else dummy | 384 or 64 | — |
-| `minilm` / `local` | `sentence-transformers/all-MiniLM-L6-v2` | 384 | `[local]` extra |
-| `dummy` | SHA-256-seeded PRNG (no semantics) | 64 | — |
-| `<org>/<model>` | that HuggingFace sentence-transformers model | model's | `[local]` extra |
+| `embedder` | Model | Dims | Window | Needs |
+| --- | --- | --- | --- | --- |
+| `auto` (default) | bge if installed, else dummy | 384 or 64 | — | — |
+| `local` / `bge` | `BAAI/bge-small-en-v1.5` | 384 | 512 tok | `[local]` extra |
+| `minilm` | `sentence-transformers/all-MiniLM-L6-v2` | 384 | 256 tok | `[local]` extra |
+| `dummy` | SHA-256-seeded PRNG (no semantics) | 64 | — | — |
+| `<org>/<model>` | that HuggingFace sentence-transformers model | model's | model's | `[local]` extra |
 
 Vectors are L2-normalized, so cosine similarity is a dot product. The first real
-embed downloads ~90MB into `<root>/models`; afterwards it runs fully offline.
+embed downloads ~130MB into `<root>/models`; afterwards it runs fully offline.
+
+**Why bge and not the faster MiniLM.** MiniLM's 256 word-piece window truncates
+silently, and it lands on the longest chunks — the atomic proofs and code listings the
+chunker deliberately keeps whole, i.e. the ones most likely to be complete answers. On
+a real 220-chunk course deck it truncated **90 chunks (40.9%)**, and for queries about
+the dropped tail it scored the correct chunk *below a random chunk*. bge's 512-token
+window truncates **nothing** in the sampled corpus (largest chunk seen: 479 tokens), at
+the cost of ~2.7x slower embedding (4.5ms vs 1.7ms per chunk). Full numbers in
+[docs/chunking-robustness.md](docs/chunking-robustness.md). `embedder = "minilm"` still
+selects MiniLM if you want the speed.
+
+**Cosine scales are model-specific.** bge's values sit much higher than MiniLM's for the
+same pair of texts — two unrelated sentences score 0.476 under bge and 0.054 under
+MiniLM. bge is not worse (it rates a near-identical pair 0.978 vs MiniLM's 0.957); its
+range is simply compressed. Any relevance threshold must be calibrated per model rather
+than carried over. bge also documents a query-side instruction prefix
+(`"Represent this sentence for searching relevant passages: "`) for retrieval; passages
+are embedded plainly, and the query path is a Phase 3 concern.
 
 **A course's embedding model is fixed at `init-course`.** Vectors from different
 models are not comparable, and a table's vector width cannot change, so `kb ingest`
@@ -78,6 +97,30 @@ rm -rf course-kb/courses/CS240-W26
 kb init-course CS240-W26
 kb ingest CS240-W26 <file> --category <category>   # for each file
 ```
+
+### Courses built before Phase 2
+
+`CS240`, `CS247`, `CS348`, and `PHIL121` were created before the real embedder existed,
+so their manifests record `dummy-hash-64` / `dims: 64` and their vectors carry no
+semantic meaning. With the `[local]` extra installed, `embedder = "auto"` now resolves
+to a 384-dim model, so **these courses reject further ingestion by design** — the
+mismatch guard fires rather than mixing incomparable vectors into one table. That is
+expected, not a bug. To bring one up to date, rebuild it from the original source
+files using the recipe above (`rm -rf courses/<name>`, `kb init-course <name>`,
+re-ingest each PDF). Their `raw/` folders are empty — ingestion has never copied
+sources — so the rebuild needs the PDFs you originally ingested from. `kb delete` and
+`kb info` keep working on them meanwhile, since neither loads an embedding model.
+
+### Vectors and hardware
+
+Embedding is deterministic: the same text, model, and device produce **bit-identical**
+vectors across processes, thread counts, and batch sizes. Across *devices* it is not
+exact — measured MPS (Apple GPU) vs CPU: max `1.5e-07` per dimension, cosine
+`0.9999999709`. That is far below anything that changes a ranking, but two things
+follow. A course embedded on one machine and queried from another (a hosted MCP server,
+say) carries a tiny corpus-vs-query device delta, so relevance thresholds should never
+be tuned to more precision than that. And tests must not assert bit-equality across
+machines — assert cosine thresholds and rank order instead.
 
 ## Configuration
 

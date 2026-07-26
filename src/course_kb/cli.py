@@ -80,7 +80,7 @@ def cmd_init_course(args: argparse.Namespace) -> int:
     if _is_dummy(embedder.model_id):
         print(
             "note: dummy vectors carry no semantic meaning. For real embeddings:\n"
-            '  pip install -e ".[local]"   (or set embedder = "minilm" in config.toml)',
+            '  pip install -e ".[local]"   (or set embedder = "local" in config.toml)',
             file=sys.stderr,
         )
     return 0
@@ -124,6 +124,25 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         cfg=cfg,
         added_at=added_at,
     )
+
+    # A file that yields nothing is not "already up to date" — say so, since the
+    # usual cause is an image-only scan that silently indexes as an empty document.
+    if not records:
+        kept = keep_elements(doc.elements, cfg)
+        dropped = len(doc.elements) - len(kept)
+        hint = (
+            "An image-only or scanned PDF needs OCR before it can be indexed."
+            if not kept
+            else "Text was parsed, but no chunk survived the chunker's minimum size."
+        )
+        print(
+            f"error: no chunks produced from {path.name} — nothing was ingested.\n"
+            f"  {len(doc.elements)} page(s) parsed, {dropped} dropped as near-empty "
+            f"(< {cfg.min_element_chars} non-space chars).\n"
+            f"  {hint}",
+            file=sys.stderr,
+        )
+        return 1
 
     # Skip chunks already stored for THIS file (by content hash) so re-ingest is
     # a no-op, while identical slides shared across files are kept per file.

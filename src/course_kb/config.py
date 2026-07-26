@@ -24,7 +24,7 @@ class Config:
     root: Path = Path("course-kb")
     # "auto" picks the real local model when sentence-transformers is installed and
     # falls back to the dummy otherwise, so both installs work with no config file.
-    # Also accepts "dummy", "minilm"/"local", or a HuggingFace model id.
+    # Also accepts "dummy", "local"/"bge", "minilm", or a HuggingFace model id.
     embedder: str = "auto"
     # Texts per forward pass when embedding a course's worth of chunks.
     embed_batch_size: int = 32

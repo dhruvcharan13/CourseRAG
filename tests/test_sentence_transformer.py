@@ -58,7 +58,7 @@ def _write_local_config(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.toml").write_text(
-        f'embedder = "minilm"\ncache_dir = {json.dumps(constants.HF_HUB_CACHE)}\n',
+        f'embedder = "local"\ncache_dir = {json.dumps(constants.HF_HUB_CACHE)}\n',
         encoding="utf-8",
     )
 
@@ -87,14 +87,23 @@ def test_embed_returns_finite_unit_vectors(embedder):
 
 
 def test_similar_texts_score_high_and_unrelated_low(embedder):
+    """Assert a margin, not an absolute floor — the floor is model-specific.
+
+    On these same three texts MiniLM scores unrelated at 0.054 while bge scores them
+    at 0.476: bge's cosine range is compressed, not worse (it rates the near-identical
+    pair higher, 0.978 vs 0.957). An absolute ceiling on `unrelated` would encode one
+    model's scale. Phase 3 relevance thresholds need per-model calibration for exactly
+    this reason.
+    """
     a, b, c = embedder.embed([SIMILAR_A, SIMILAR_B, UNRELATED])
 
     similar = _cosine(a, b)
     unrelated = _cosine(a, c)
 
-    assert similar > 0.8, f"near-identical texts scored only {similar:.3f}"
-    assert unrelated < 0.4, f"unrelated texts scored {unrelated:.3f}"
-    assert similar > unrelated
+    assert similar > 0.9, f"near-identical texts scored only {similar:.3f}"
+    assert similar - unrelated > 0.35, (
+        f"weak separation: near-identical {similar:.3f} vs unrelated {unrelated:.3f}"
+    )
 
 
 def test_empty_input_short_circuits_without_loading_the_model():
@@ -125,60 +134,73 @@ def test_batch_size_is_configurable_and_order_preserving(embedder):
 # --------------------------------------------------------------------------- #
 
 # Notation-dense text: ~1 word-piece per character, where chars/4 badly under-counts.
-MATH_HEAVY = "Let A = { n ∈ N : n ≡ 1 ( mod 3 ) } and B = { n ∈ N : n ≡ 2 ( mod 3 ) }. " * 12
+MATH_UNIT = "Let A = { n ∈ N : n ≡ 1 ( mod 3 ) } and B = { n ∈ N : n ≡ 2 ( mod 3 ) }. "
+MATH_HEAVY = MATH_UNIT * 12
+
+
+def _oversize_text(embedder) -> str:
+    """Text guaranteed to exceed whichever model is the default (256 or 512 window)."""
+    repeats = 12
+    while True:
+        text = MATH_UNIT * repeats
+        if embedder.count_tokens([text])[0] > embedder.max_input_tokens:
+            return text
+        repeats *= 2
 
 
 def test_max_input_tokens_is_the_models_budget(embedder):
-    assert embedder.max_input_tokens == 256
+    # bge-small-en-v1.5 is the default precisely for this number; MiniLM's is 256.
+    assert embedder.max_input_tokens == 512
 
 
 def test_count_tokens_matches_the_tokenizer(embedder):
-    counts = embedder.count_tokens([SIMILAR_A, MATH_HEAVY])
+    oversize = _oversize_text(embedder)
+    counts = embedder.count_tokens([SIMILAR_A, oversize])
     assert counts[0] < 32  # one short sentence
     assert counts[1] > embedder.max_input_tokens  # this one gets truncated
     assert embedder.count_tokens([]) == []
 
 
 def test_char_estimate_undercounts_notation_dense_text(embedder):
-    # The reason ingest counts real tokens instead of trusting chars/4: this text is
-    # under the character-based threshold but well over the model's real budget.
+    # The reason ingest counts real tokens instead of trusting chars/4: the character
+    # estimate lands far below the true word-piece count on notation-dense text.
     from course_kb.chunker import estimate_tokens
 
     (real,) = embedder.count_tokens([MATH_HEAVY])
-    assert estimate_tokens(MATH_HEAVY) < 256 < real
+    assert estimate_tokens(MATH_HEAVY) < real / 1.5
 
 
 def test_oversize_text_embeds_only_its_head(embedder):
     """Truncation is silent and total: the tail contributes nothing to the vector."""
     tokenizer = embedder._ensure_model().tokenizer
     limit = embedder.max_input_tokens
-    ids = tokenizer(MATH_HEAVY, add_special_tokens=False, truncation=False, verbose=False)[
-        "input_ids"
-    ]
+    text = _oversize_text(embedder)
+    ids = tokenizer(text, add_special_tokens=False, truncation=False, verbose=False)["input_ids"]
     assert len(ids) > limit
     head = tokenizer.decode(ids[: limit - 2])
 
-    full_vector, head_vector = embedder.embed([MATH_HEAVY, head])
+    full_vector, head_vector = embedder.embed([text, head])
     assert max(abs(a - b) for a, b in zip(full_vector, head_vector)) == 0.0
 
 
-def test_cli_ingest_warns_with_real_token_counts(tmp_path, monkeypatch, capsys):
+def test_cli_ingest_warns_with_real_token_counts(tmp_path, monkeypatch, capsys, embedder):
     _write_local_config(tmp_path, monkeypatch)
     assert main(["init-course", "C"]) == 0
 
+    oversize = _oversize_text(embedder)
     listing = tmp_path / "proof.txt"
-    listing.write_text("```\n" + MATH_HEAVY + "\n```", encoding="utf-8")  # atomic block
+    listing.write_text("```\n" + oversize + "\n```", encoding="utf-8")  # atomic block
     assert main(["ingest", "C", str(listing), "--category", "notes"]) == 0
 
     err = capsys.readouterr().err
-    assert "exceed the model's 256-token limit" in err
+    assert f"exceed the model's {embedder.max_input_tokens}-token limit" in err
     assert "not searchable" in err
 
     # The stored text is still whole — only the vector is head-only.
     records = CourseStore.open_or_create(
         tmp_path / "course-kb" / "courses" / "C", 384
     ).get_all()
-    assert any(MATH_HEAVY.strip() in r.text for r in records)
+    assert any(oversize.strip() in r.text for r in records)
 
 
 def test_cli_ingest_stores_384_dim_unit_vectors(tmp_path, monkeypatch):

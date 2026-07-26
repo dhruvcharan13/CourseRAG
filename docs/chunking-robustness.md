@@ -125,12 +125,51 @@ already loaded, so it is nearly free) and reports exactly what will be lost —
 `warning: 6 of 8 chunk(s) exceed the model's 256-token limit (largest: 501 tokens)...`.
 `chunks --report` keeps the chars/4 hint, relabelled as an estimate.
 
-**Why this is accepted for now:** 7.7% of chunks affected, median 11% of pieces lost, and the
+**Why this was accepted at first:** 7.7% of chunks affected, median 11% of pieces lost, and the
 loss concentrates in reference-style pages (answer keys, SQL syntax tables, long proofs) whose
-heads still carry the topic — so retrieval degrades rather than breaks. The real fix is
-per-page mode selection plus splitting oversize atomic blocks at a token boundary, which
-collides with the "protected blocks are never split" rule and belongs with the mixed-mode work
-below. Until then the number is visible on every ingest instead of being an unmeasured unknown.
+heads still carry the topic — so retrieval degrades rather than breaks.
+
+**Then the tail check showed it does break.** Resolved by changing the model, not the chunker —
+see below.
+
+### Model change: MiniLM -> bge-small-en-v1.5
+
+Measured on `Enumeration.pdf` (115 pages, 220 chunks), embedding every chunk under both models:
+
+| | all-MiniLM-L6-v2 | bge-small-en-v1.5 |
+|---|---:|---:|
+| Window | 256 | 512 |
+| Chunks truncated | **90 (40.9%)** | **0** |
+| Word-pieces lost | 4,670 | 0 |
+| Pairwise cosine median (24,090 pairs) | 0.284 | 0.691 |
+| Discrimination AUC (related vs unrelated pairs) | 0.864 | 0.843 |
+| Cohen's d | 1.875 | 1.671 |
+| Params / cold load / ms-per-chunk | 22.7M / 5.0s / 1.69 | 33.4M / 8.9s / 4.50 |
+
+The deciding evidence was tail recovery. For three chunks MiniLM truncates, a query targeting
+content **only in the dropped tail** scored:
+
+| chunk | MiniLM (head-only) | bge full | bge head-only *(control)* | window effect |
+|---|---:|---:|---:|---:|
+| Euler totient, 39% dropped | −0.052 | 0.764 | 0.612 | **+0.151** |
+| Catalan numbers, 36% dropped | 0.214 | 0.716 | 0.499 | **+0.217** |
+| contents page, 36% dropped | 0.311 | 0.798 | 0.749 | +0.049 |
+
+The head-only column is the control: same model, same query, only the window differs, so the
+gain is attributable to the window rather than to model identity. Measured against each model's
+own floor (median similarity to 40 random chunks), MiniLM's headroom was **−0.142** and
+**−0.014** on the first two — the correct chunk ranked at or below random noise for a query
+about its own content. That is unfindable, not merely degraded.
+
+Costs accepted: 2.7x slower per chunk (irrelevant beside a one-off 8.9s load), ~2 AUC points of
+discrimination on a page-adjacency proxy (weak evidence next to the truncation result), and a
+compressed cosine scale — bge rates two unrelated sentences 0.476 where MiniLM says 0.054, so
+**relevance thresholds must be calibrated per model**. bge documents a query-side instruction
+prefix for retrieval, to be A/B'd in Phase 3; passages are embedded plainly.
+
+The chunker was **not** changed. Per-page mode selection and splitting oversize atomic blocks
+remain open (see the mixed-mode investigation below) and would matter again for any model with
+a window below 512.
 
 ## Investigations
 

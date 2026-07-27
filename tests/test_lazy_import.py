@@ -73,6 +73,57 @@ assert emb.dims == 384, emb.dims
     )
 
 
+def test_search_help_does_not_import_the_model_stack():
+    """Reranking added a second model; --help must still cost nothing."""
+    assert (
+        _heavy_modules_after(
+            """
+from course_kb.cli import main
+try:
+    main(["search", "--help"])
+except SystemExit:
+    pass
+"""
+        )
+        == []
+    )
+
+
+def test_constructing_the_reranker_does_not_import_the_model_stack():
+    # Naming a reranker, or having one configured but never asking for it, is free.
+    assert (
+        _heavy_modules_after(
+            """
+from course_kb.config import Config
+from course_kb.reranking import get_reranker
+r = get_reranker("local", Config())
+assert r.model_id.startswith("cross-encoder/"), r.model_id
+"""
+        )
+        == []
+    )
+
+
+def test_dense_search_without_rerank_never_loads_the_cross_encoder():
+    """The default path must stay exactly as cheap as it was before Phase 4."""
+    assert (
+        _heavy_modules_after(
+            """
+import sys, tempfile, pathlib
+from course_kb.cli import main
+tmp = tempfile.mkdtemp()
+import os; os.chdir(tmp)
+pathlib.Path("config.toml").write_text('embedder = "dummy"\\nreranker = "dummy"\\n')
+pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
+assert main(["init-course", "C"]) == 0
+assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
+assert main(["search", "C", "tower height", "--json"]) == 0
+"""
+        )
+        == []
+    )
+
+
 def test_dummy_path_never_touches_the_model_stack():
     assert (
         _heavy_modules_after(

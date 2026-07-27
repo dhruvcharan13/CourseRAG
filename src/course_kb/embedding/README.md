@@ -35,13 +35,17 @@ verifies *every* member by `hasattr`, not just methods, so a class with `embed()
 
 ### Optional capabilities live outside the protocol
 
-The real model also exposes `max_input_tokens` and `count_tokens()`. These are
-deliberately **not** in `Embedder`. Callers discover them with `getattr`:
+The real model also exposes `max_input_tokens`, `count_tokens()`, `query_prefix` and
+`embed_query()`. These are deliberately **not** in `Embedder`. Callers discover them
+with `getattr`:
 
 ```python
 count_tokens = getattr(embedder, "count_tokens", None)
 if count_tokens is None:
     ...  # fall back to the chars/4 estimate, labelled as an estimate
+
+# retrieval.py — asymmetric models embed queries differently than passages
+embed = getattr(embedder, "embed_query", None) or embedder.embed
 ```
 
 Widening the contract would force the dummy — and any future cloud embedder — to fake a
@@ -148,7 +152,17 @@ from `sys.modules`.
   Its range is compressed, not worse. Never carry an absolute threshold across models —
   assert margins, not floors.
 - **bge wants a query-side prefix** (`"Represent this sentence for searching relevant
-  passages: "`) for retrieval. Passages are embedded plainly. Unimplemented; Phase 3.
+  passages: "`) for retrieval. Passages are embedded plainly. Implemented as
+  `embed_query()`, applied only on the search path; `kb ingest` calls `embed()` so
+  passages stay prefix-free by construction. A/B'd on the CS240 eval set (30 queries,
+  181 chunks): recall@3 `0.900` with the prefix vs `0.867` without, recall@5 `0.933` vs
+  `0.900`, MRR `0.857` vs `0.852`; recall@1 and recall@10 are identical. Only 3 of 30
+  queries move at all, each by exactly one rank, all three toward the prefix.
+  **Directionally consistent and never harmful, but small enough that at this n it is not
+  distinguishable from noise** (3/3 same-direction is a sign test at p=0.125). Keep it —
+  it is free and it matches how the model was trained — but do not expect it to carry a
+  retrieval improvement on its own. `_QUERY_PREFIXES` is keyed by model because MiniLM
+  and mpnet are symmetric and prefixing them would only hurt.
 - **Determinism is per-device.** Bit-identical across processes, thread counts, and batch
   sizes on one device; `1.5e-07` per dimension between MPS and CPU. Assert cosine
   thresholds and rank order across machines, never bit-equality.

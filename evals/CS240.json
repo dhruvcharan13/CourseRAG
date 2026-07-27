@@ -1,0 +1,190 @@
+{
+  "course": "CS240",
+  "authored": "2026-07-26",
+  "note": "Authored blind: written by reading the source PDFs directly, before running the queries, so no question was tuned to what retrieval happens to return. Gold labels are (source_file, page) rather than chunk ids so they survive a re-chunk. `expected` lists the acceptable LOCATIONS of one intended answer (a concept slide and its pseudocode slide are the same answer), not several distinct answers. Image-only and TOC pages are excluded as unfair targets: module05.pdf pages 2/3/5/33/35/38 are Outline slides, and pages 15/20/24/25/28/29 chunk down to bare diagram captions ('Height decrease', 'get-predecessors(52)') with no answerable text.",
+  "revisions": "2026-07-26 (m*/a*): 12 questions over module05 + a3-a5, a 52-chunk corpus. 2026-07-26 (n*): 18 added when the corpus grew to 181 chunks over 10 documents (module01/03/05, tut01sol, a0-a5). The original 12 are unchanged and their gold pages still resolve. The n* set deliberately targets the confusability the bigger corpus introduced: three documents now cover asymptotic notation (module01 defines it, tut01sol proves it, a1 asks about it) and two cover sorting.",
+  "default_k": 5,
+  "queries": [
+    {
+      "id": "m1",
+      "query": "Why can't we use binary search on an ordered linked list?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [6] }],
+      "note": "Slide 'Towards skip lists': in an ordered list we cannot 'skip to the middle', so search is Theta(n)."
+    },
+    {
+      "id": "m2",
+      "query": "What two references does each node of a skip list store?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [8] }],
+      "note": "'Each node p has references p.after and p.below'."
+    },
+    {
+      "id": "m3",
+      "query": "How is the height of a key's tower chosen when inserting into a skip list?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [21, 30] }],
+      "note": "p21 states it in prose (repeatedly toss a coin until tails); p30 is the same rule as pseudocode (`for (i <- 0; random(2) = 1; i++)`). Either is a correct hit."
+    },
+    {
+      "id": "m4",
+      "query": "What is the expected space usage and expected run-time of skip list operations?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [31, 32] }],
+      "note": "Analysis slide and summary slide: O(n) expected space, O(log n) expected time for all operations. Known hazard: a4.pdf p1 asks the student to DERIVE this bound. The lecture states the result, so a4 p1 is a miss, not a hit."
+    },
+    {
+      "id": "m5",
+      "query": "What does the move-to-front heuristic do after a successful search?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [39] }],
+      "note": "'Upon a successful search, move the accessed item to the front of the list'."
+    },
+    {
+      "id": "m6",
+      "query": "What is the transpose heuristic, and how does it differ from move-to-front?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [40] }],
+      "note": "'swap the accessed item with the item immediately preceding it' — changes are more gradual than MTF."
+    },
+    {
+      "id": "m7",
+      "query": "Which ordering of a list minimizes the average access cost when the access frequencies are known?",
+      "expected": [{ "source_file": "module05.pdf", "pages": [36, 37] }],
+      "note": "p36 defines average access cost; p37 states the claim: sort by non-increasing access-frequency."
+    },
+    {
+      "id": "a1",
+      "query": "What is the worst-case runtime of interpolation search on an array with entries A[i] = alpha * i?",
+      "expected": [{ "source_file": "a4.pdf", "pages": [3] }],
+      "note": "Assignment 4 Question 3(a), Interpolation search."
+    },
+    {
+      "id": "a2",
+      "query": "Trace the construction of the Huffman trie for the string mississauga.",
+      "expected": [{ "source_file": "a5.pdf", "pages": [4] }],
+      "note": "Assignment 5 Question 4(a). 'mississauga' is a strong lexical anchor — should be easy."
+    },
+    {
+      "id": "a3",
+      "query": "When is Assignment 4 due and what is its late policy?",
+      "expected": [{ "source_file": "a4.pdf", "pages": [1] }],
+      "note": "Deliberate hard case. a3.pdf p1 and a5.pdf p1 carry near-identical due-date boilerplate differing only in the dates, which dense retrieval is expected to confuse. A fair target for Phase 4 to fix."
+    },
+    {
+      "id": "a4",
+      "query": "Describe an algorithm that merges two AVL trees whose heights are given.",
+      "expected": [{ "source_file": "a3.pdf", "pages": [2] }],
+      "note": "Assignment 3 Question 3, 'Merging AVL Trees', Join(TA, TB, hA, hB)."
+    },
+    {
+      "id": "a5",
+      "query": "How is the spread of a point set defined, and what does it imply about quadtree height?",
+      "expected": [{ "source_file": "a5.pdf", "pages": [2] }],
+      "note": "Assignment 5 Question 2(a)/(b): quadtree of height exactly 6, and the spread of a point set."
+    },
+
+    {
+      "id": "n1",
+      "query": "What does the RAM model assume about the cost of accessing memory cells?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [17] }],
+      "note": "Slide 'Random access machine (RAM) model': random access, equally fast to all cells, unbounded cell size."
+    },
+    {
+      "id": "n2",
+      "query": "What is the definition of Theta-notation in terms of the constants c1, c2 and n0?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [24] }],
+      "note": "Slide 'Asymptotic tight bound'. HARD (m5/m6 pattern): a1.pdf p1 poses Theta problems and tut01sol.pdf proves Theta statements, so the lecture DEFINITION competes with an assignment question and a tutorial proof on the same notation."
+    },
+    {
+      "id": "n3",
+      "query": "What is the main difference between o-notation and O-notation?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [28] }],
+      "note": "'Main difference between o and O is the quantifier for c'. HARD (near-duplicate): module01 p26/p29 also discuss o-notation, and o-notation appears again in tut01sol.pdf and a1.pdf."
+    },
+    {
+      "id": "n4",
+      "query": "What is the limit rule for comparing the growth rates of two functions?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [31] }],
+      "note": "Slide 'The limit rule': the value of lim f(x)/g(x) determines which order relation holds."
+    },
+    {
+      "id": "n5",
+      "query": "What recurrence does merge-sort satisfy and what does it resolve to?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [49, 50, 51, 52] }],
+      "note": "p49 sets up the exact recurrence, p50 simplifies it, p51 summarises, p52 tabulates T(n) <= 2T(n/2) + O(n) -> O(n log n). Any is a correct location for the one answer."
+    },
+    {
+      "id": "n6",
+      "query": "What are the four steps for giving an algorithm that solves a problem?",
+      "expected": [{ "source_file": "module01.pdf", "pages": [44] }],
+      "note": "'To give an algorithm that solves a problem, we usually do four steps', illustrated on merge-sort."
+    },
+    {
+      "id": "n7",
+      "query": "What is the difference between average-case run-time and expected run-time?",
+      "expected": [{ "source_file": "module03.pdf", "pages": [19] }],
+      "note": "Slide 'Summary: Average-case run-time vs. expected run-time' — the answer is 'No!' plus the distinction. HARD (m5/m6 pattern): a2.pdf poses average-case counting problems on the same idea."
+    },
+    {
+      "id": "n8",
+      "query": "What is the expected run-time of randomized quick-select?",
+      "expected": [{ "source_file": "module03.pdf", "pages": [29, 30, 31] }],
+      "note": "Theta(n). p29/p30 derive the recurrence, p31 states it. HARD (confusable pair): near-identical phrasing to n9, six slides apart, different answer."
+    },
+    {
+      "id": "n9",
+      "query": "What is the expected run-time of randomized quick-sort?",
+      "expected": [{ "source_file": "module03.pdf", "pages": [36, 37] }],
+      "note": "Theta(n log n). HARD (confusable pair): the deliberate twin of n8. If dense retrieval crosses these two, hybrid retrieval should be what separates them."
+    },
+    {
+      "id": "n10",
+      "query": "What does it mean for a sorting algorithm to be comparison-based?",
+      "expected": [{ "source_file": "module03.pdf", "pages": [40] }],
+      "note": "'Data is accessed only by comparing two elements (a key-comparison)', on the sorting lower-bound slide."
+    },
+    {
+      "id": "n11",
+      "query": "In what order does LSD-radix-sort process the digits?",
+      "expected": [{ "source_file": "module03.pdf", "pages": [69] }],
+      "note": "'for d <- least significant to most significant digit'. Competes with MSD-radix-sort on p68."
+    },
+    {
+      "id": "n12",
+      "query": "Prove that log(n!) is in Theta(n log n).",
+      "expected": [{ "source_file": "tut01sol.pdf", "pages": [2, 3] }],
+      "note": "Tutorial 01 question 3, 'Factorials'. Statement on p2, proof continues on p3. HARD (near-duplicate): module01 covers Theta and logarithm facts; this is the tutorial's worked proof."
+    },
+    {
+      "id": "n13",
+      "query": "For the function that equals n squared when n is even and n when n is odd, is it in O(n squared)?",
+      "expected": [{ "source_file": "tut01sol.pdf", "pages": [3, 4] }],
+      "note": "Tutorial 01 question 4, 'Parity'. Question on p3, answers on p4. HARD (near-duplicate): O/Omega/Theta/o reasoning also appears in module01 and a1."
+    },
+    {
+      "id": "n14",
+      "query": "Is heapsort a stable sorting algorithm?",
+      "expected": [{ "source_file": "a2.pdf", "pages": [3] }],
+      "note": "Assignment 2 Question 4. HARD (m5/m6 pattern, inverted): the ASSIGNMENT is the right answer here, competing against module03's sorting slides."
+    },
+    {
+      "id": "n15",
+      "query": "What is an inversion in an array, and what are the maximum and minimum numbers of inversions?",
+      "expected": [{ "source_file": "a2.pdf", "pages": [4] }],
+      "note": "Assignment 2 Question 6: 'a pair of indices (i, j) such that i < j and A[i] > A[j]'."
+    },
+    {
+      "id": "n16",
+      "query": "Leo's induction proof ends with a different constant than the induction hypothesis — why is that wrong?",
+      "expected": [{ "source_file": "a1.pdf", "pages": [3] }],
+      "note": "Assignment 1 Question 3, the TA-Leo scenario. HARD (exact-token): 'Leo' is a rare literal token that appears nowhere else in the corpus, so this probes whether dense retrieval can use a distinctive name."
+    },
+    {
+      "id": "n17",
+      "query": "How do I include an image of handwritten work in a LaTeX assignment?",
+      "expected": [{ "source_file": "a0.pdf", "pages": [8] }],
+      "note": "Assignment 0 section 'Images'. Administrative rather than technical content — a KB holds both."
+    },
+    {
+      "id": "n18",
+      "query": "When is the first Academic Integrity Declaration due and which assignments does it cover?",
+      "expected": [{ "source_file": "a0.pdf", "pages": [2] }],
+      "note": "Assignment 0: the first agreement covers A0, A1, A2 and PQ1. HARD (exact-token): 'Academic Integrity Declaration' and the identifier 'PQ1' are literal strings, the kind of query dense embeddings typically handle worse than BM25."
+    }
+  ]
+}

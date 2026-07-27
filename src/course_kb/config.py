@@ -31,6 +31,15 @@ class Config:
     # Where downloaded embedding models are cached; defaults to ``root / "models"``.
     cache_dir: Path | None = None
 
+    # Which reranker to use *when one is asked for*. Naming it here costs nothing; only
+    # `kb search --rerank` / `kb eval --rerank` construct it. "auto" picks the local
+    # cross-encoder when sentence-transformers is installed and the dummy otherwise.
+    reranker: str = "auto"
+    # How many dense candidates the reranker rescores. A cross-encoder runs one forward
+    # pass per candidate, so this is the knob that trades latency for the chance to
+    # recover a low-ranked answer; it is also a hard ceiling on what reranking can fix.
+    rerank_candidates: int = 20
+
     chunk_size: int = 1000
     # Currently unread: the chunker derives prose overlap from its own OVERLAP_RATIO
     # (~12% of chunk_size) rather than an absolute char count. Kept for config stability.

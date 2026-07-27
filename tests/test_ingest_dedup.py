@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+
+import pytest
 from pathlib import Path
 
 from course_kb.cli import main
@@ -66,6 +68,42 @@ def test_identical_text_in_different_files_is_kept(tmp_path, monkeypatch, dummy_
     store = _open_store(tmp_path, "C")
     assert store.count() == 2  # not deduped across files
     assert {r.source_file for r in store.get_all()} == {"module05.txt", "module06.txt"}
+
+
+def test_duplicate_chunks_within_one_file_are_deduped_on_first_ingest(
+    tmp_path, monkeypatch, dummy_config
+):
+    """Two identical chunks in the SAME file, in ONE run, must store once.
+
+    Regression: dedup compared against a snapshot of what was already stored, so a
+    document with two identical pages (a slide deck's repeated "Intentionally blank."
+    or a bare "UML Diagram" caption) stored both on the first ingest. Re-ingest then
+    reported a clean no-op, because by then both were stored — so the index looked
+    deduped while holding duplicate vectors competing for the same top-k slots.
+    Found on a real 34-document course, where 6 chunks were affected.
+    """
+    fitz = pytest.importorskip("fitz")
+    monkeypatch.chdir(tmp_path)
+    assert main(["init-course", "C"]) == 0
+
+    # A slide deck chunks one-per-page, so two identical pages give two identical
+    # chunks in a single run — the shape a text file cannot produce, because prose
+    # mode merges short paragraphs into one chunk.
+    repeated = "Intentionally blank."
+    path = tmp_path / "deck.pdf"
+    doc = fitz.open()
+    for title in (repeated, "Iterator Pattern", repeated):
+        page = doc.new_page()
+        page.insert_text((72, 96), title, fontsize=28, fontname="hebo")
+    doc.save(path)
+    doc.close()
+
+    assert main(["ingest", "C", str(path), "--category", "lecture"]) == 0
+
+    records = _open_store(tmp_path, "C").get_all()
+    hashes = [r.content_hash for r in records]
+    assert len(hashes) == len(set(hashes)), "first ingest stored duplicate chunks"
+    assert sum(1 for r in records if repeated in r.text) == 1
 
 
 def test_pdf_ingest_and_read_back(tmp_path, monkeypatch, dummy_config):

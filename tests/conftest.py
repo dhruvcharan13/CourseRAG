@@ -17,3 +17,15 @@ def dummy_config(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('embedder = "dummy"\n', encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def dummy_rerank_config(tmp_path):
+    """Pin both the embedder and the reranker to their dummies.
+
+    Lets the two-stage path be exercised end to end with no model download and no
+    torch, so reranking's *wiring* is tested independently of any real model.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text('embedder = "dummy"\nreranker = "dummy"\n', encoding="utf-8")
+    return path

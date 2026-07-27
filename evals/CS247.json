@@ -1,0 +1,181 @@
+{
+  "course": "CS247",
+  "authored": "2026-07-27",
+  "note": "Authored blind: written by reading the source PDFs directly, before running any query, so no question was tuned to what retrieval returns. Gold labels are (source_file, page) rather than chunk ids so they survive a re-chunk. `expected` lists the acceptable LOCATIONS of one intended answer, not several distinct answers. Independent of evals/CS240.json — no question was ported, because the point of a second course is an independent read on the same retriever.",
+  "corpus": "670 chunks over 34 documents: 22 lecture decks, 5 assignment specs (A3Q1-Q2, A4Q1-Q3), 2 project specs (ArcaneMarket, RuneVault), 4 sample finals and 1 sample midterm. Excluded as not course-issued: cs247_midterm_cheatsheet.pdf (personal notes) and an unofficial grade report that matches 'CS 247' only because it lists enrolled courses.",
+  "design": "CS247 is software design and C++, so the question mix probes shapes CS240 could not. Four groups: e* exact-token/identifier, p* paraphrase-cluster, c* cross-document (a pattern defined in a lecture and also the whole subject of an assignment), s* straightforward. The p* group is the deliberate stress case: six separate decks each carry a slide beginning literally 'Design Principle:', so surface form alone cannot pick the right one.",
+  "default_k": 5,
+  "queries": [
+    {
+      "id": "e1",
+      "query": "What does the CompositeIterator class do?",
+      "expected": [{ "source_file": "16_IteratorCompositePatterns.pdf", "pages": [34] }],
+      "note": "EXACT-TOKEN (code-embedded). 'A tree-walking iterator that flattens a Composite'. The identifier appears only inside a code listing, where surrounding text is syntax rather than explanation — the case CS240's corpus had no analogue for."
+    },
+    {
+      "id": "e2",
+      "query": "In the Weather-O-Rama example, what are the three display elements?",
+      "expected": [{ "source_file": "11_Observer Pattern.pdf", "pages": [3, 4] }],
+      "note": "EXACT-TOKEN (prose). Current conditions, statistics, and forecast displays. 'Weather-O-Rama' is a rare literal in running prose — the same shape as CS240's 'Leo', which ranked 1."
+    },
+    {
+      "id": "e3",
+      "query": "What is the Starbuzz Coffee example used to illustrate?",
+      "expected": [{ "source_file": "12_Decorator Pattern.pdf", "pages": [2] }],
+      "note": "EXACT-TOKEN (prose). The Decorator pattern's running example."
+    },
+    {
+      "id": "e4",
+      "query": "What does the Gumball Machine example demonstrate?",
+      "expected": [{ "source_file": "17_StatePattern.pdf", "pages": [2, 3] }],
+      "note": "EXACT-TOKEN (prose). The State pattern's running example."
+    },
+    {
+      "id": "e5",
+      "query": "What is CRTP, the Curiously Recurring Template Pattern, mentioned in relation to?",
+      "expected": [{ "source_file": "12_Decorator Pattern.pdf", "pages": [17] }],
+      "note": "EXACT-TOKEN (acronym). Raised as an alternative to virtual functions for polymorphic behaviour in Decorator."
+    },
+    {
+      "id": "e6",
+      "query": "In ArcaneMarket, how much do the four Forges cost?",
+      "expected": [{ "source_file": "CS247_ArcaneMarket_Project.pdf", "pages": [5] }],
+      "note": "EXACT-TOKEN (invented domain vocabulary). Ironhold, Bronzeworks, Coppergate and Steelspire, 200 Reagents each."
+    },
+    {
+      "id": "e7",
+      "query": "In RuneVault, what is the Cipher Gem?",
+      "expected": [{ "source_file": "CS247_RuneVault_Project.pdf", "pages": [5] }],
+      "note": "EXACT-TOKEN (invented domain vocabulary). One of the two major items."
+    },
+
+    {
+      "id": "p1",
+      "query": "Which design principle says to favour composition over inheritance?",
+      "expected": [{ "source_file": "10_IntroDesignPatterns.pdf", "pages": [6] }],
+      "note": "PARAPHRASE-CLUSTER. One of six 'Design Principle:' slides spread across six decks, all structurally identical in their opening."
+    },
+    {
+      "id": "p2",
+      "query": "Which design principle says classes should be open for extension but closed for modification?",
+      "expected": [{ "source_file": "12_Decorator Pattern.pdf", "pages": [4] }],
+      "note": "PARAPHRASE-CLUSTER. Competes with the other five 'Design Principle:' slides."
+    },
+    {
+      "id": "p3",
+      "query": "Which design principle says to depend upon abstractions and not upon concrete classes?",
+      "expected": [{ "source_file": "13_FactoryPattern.pdf", "pages": [8] }],
+      "note": "PARAPHRASE-CLUSTER. Competes with the other five 'Design Principle:' slides."
+    },
+    {
+      "id": "p4",
+      "query": "Which design principle says to strive for loosely coupled designs between objects that interact?",
+      "expected": [{ "source_file": "11_Observer Pattern.pdf", "pages": [6] }],
+      "note": "PARAPHRASE-CLUSTER. Competes with the other five 'Design Principle:' slides."
+    },
+    {
+      "id": "p5",
+      "query": "What are the real-world use cases given for the Observer pattern?",
+      "expected": [{ "source_file": "11_Observer Pattern.pdf", "pages": [27, 28, 29] }],
+      "note": "PARAPHRASE-CLUSTER. Nearly every pattern deck carries a 'Real World Use Cases' slide, so the section heading is uninformative and only the content disambiguates."
+    },
+    {
+      "id": "p6",
+      "query": "What is the difference between aggregation and composition in UML?",
+      "expected": [{ "source_file": "9_UMLModelling.pdf", "pages": [13, 14] }],
+      "note": "PARAPHRASE-CLUSTER. Two adjacent near-twin slides, each defining a 'part-of' relation; the answer needs both."
+    },
+
+    {
+      "id": "c1",
+      "query": "What problem does the Decorator pattern solve?",
+      "expected": [{ "source_file": "12_Decorator Pattern.pdf", "pages": [5] }],
+      "note": "CROSS-DOCUMENT (m5/m6 shape). The lecture DEFINES it; A3Q1_Spec.pdf is nine chunks entirely about implementing Decorator. On CS240 the assignment won this shape of contest."
+    },
+    {
+      "id": "c2",
+      "query": "What relationship does the Observer pattern define between objects?",
+      "expected": [{ "source_file": "11_Observer Pattern.pdf", "pages": [25] }],
+      "note": "CROSS-DOCUMENT. 'A one-to-many relationship between objects'. Competes with A3Q2_Spec.pdf and the Observer question on the sample finals."
+    },
+    {
+      "id": "c3",
+      "query": "What does the Iterator pattern provide?",
+      "expected": [{ "source_file": "16_IteratorCompositePatterns.pdf", "pages": [4] }],
+      "note": "CROSS-DOCUMENT. 'Access the elements of an aggregate object sequentially without exposing its underlying representation.' Competes with A4Q1_Spec.pdf."
+    },
+    {
+      "id": "c4",
+      "query": "Which patterns make up the MVC compound pattern?",
+      "expected": [{ "source_file": "18_MVCPatterns.pdf", "pages": [4, 15] }],
+      "note": "CROSS-DOCUMENT. Observer, Strategy and Composite. Competes with A4Q3_Spec.pdf, which is an MVC implementation task."
+    },
+    {
+      "id": "c5",
+      "query": "What does the Composite pattern let you build?",
+      "expected": [{ "source_file": "16_IteratorCompositePatterns.pdf", "pages": [17] }],
+      "note": "CROSS-DOCUMENT. Tree structures of both individual objects and compositions. Competes with A4Q1_Spec.pdf's menu-composite task."
+    },
+    {
+      "id": "c6",
+      "query": "What iterator traits must the assignment's iterators define to work with STL algorithms?",
+      "expected": [{ "source_file": "A4Q1_Spec.pdf", "pages": [4] }],
+      "note": "CROSS-DOCUMENT, REVERSED. Here the ASSIGNMENT is the correct answer ('Tip — STL Iterator Traits'), competing against lecture decks 8 and 16. Pairs with c3 to test whether the lecture/assignment bias runs in one direction or both."
+    },
+
+    {
+      "id": "s1",
+      "query": "What is the difference between an entity object and a value object?",
+      "expected": [{ "source_file": "3_ValuesVSEntity_InformationHiding.pdf", "pages": [3, 5] }],
+      "note": "Entity objects have distinct identity; value objects with equal attributes are identical."
+    },
+    {
+      "id": "s2",
+      "query": "What is the PImpl idiom and why is it used?",
+      "expected": [{ "source_file": "3_ValuesVSEntity_InformationHiding.pdf", "pages": [16, 17] }],
+      "note": "Pointer to Implementation: forward-declare a nested Impl struct to hide the representation."
+    },
+    {
+      "id": "s3",
+      "query": "What are the special member functions that the C++ compiler generates by default?",
+      "expected": [{ "source_file": "4_SpecialMemberFunction.pdf", "pages": [3, 34] }],
+      "note": "p3 introduces them, p34 summarises 'six of them; if one needs to be hand-crafted, likely all do'."
+    },
+    {
+      "id": "s4",
+      "query": "What is the difference between a shallow copy and a deep copy?",
+      "expected": [{ "source_file": "4_SpecialMemberFunction.pdf", "pages": [8, 9] }],
+      "note": "Two adjacent slides, one per side of the distinction."
+    },
+    {
+      "id": "s5",
+      "query": "What is the copy-swap idiom?",
+      "expected": [{ "source_file": "4_SpecialMemberFunction.pdf", "pages": [17] }],
+      "note": "Assignment via constructing a copy and swapping, so the operator is exception-safe."
+    },
+    {
+      "id": "s6",
+      "query": "What is the difference between an lvalue and an rvalue?",
+      "expected": [{ "source_file": "4_SpecialMemberFunction.pdf", "pages": [19] }],
+      "note": "'An lvalue is anything with an address'."
+    },
+    {
+      "id": "s7",
+      "query": "What does the requires clause mean in a CS 247 interface specification?",
+      "expected": [{ "source_file": "6_InterfaceSpecification.pdf", "pages": [7] }],
+      "note": "Preconditions: constraints that must hold before the method is called."
+    },
+    {
+      "id": "s8",
+      "query": "What is a UML sequence diagram?",
+      "expected": [{ "source_file": "9_UMLModelling.pdf", "pages": [22] }],
+      "note": "A graphical model of communication events between objects over time."
+    },
+    {
+      "id": "s9",
+      "query": "What do multiplicity annotations constrain in a UML association?",
+      "expected": [{ "source_file": "9_UMLModelling.pdf", "pages": [9] }],
+      "note": "The number of allowable links in an association."
+    }
+  ]
+}

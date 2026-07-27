@@ -4,7 +4,9 @@ Each course is one LanceDB dataset in its own directory. ``lancedb.connect``
 treats the course directory as the database and a table named ``index``
 materializes as ``<course_dir>/index.lance/`` — matching the on-disk layout.
 
-Search is Phase 3; :meth:`CourseStore.search` is intentionally a stub.
+:meth:`CourseStore.search` is the retrieval entry point: an exact cosine top-k over
+the course's vectors. Embedding the query is the caller's job (see
+:mod:`course_kb.retrieval`), so the store never needs to know which model built it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import pyarrow as pa
 from lancedb.expr import col, lit
 
 from course_kb.records import ChunkRecord
+from course_kb.retrieval import SearchResult
 
 TABLE_NAME = "index"
 
@@ -159,6 +162,47 @@ class CourseStore:
             self._table.optimize(cleanup_older_than=timedelta(0))
         return removed
 
-    def search(self, *args: object, **kwargs: object) -> object:
-        """Retrieval — implemented in Phase 3."""
-        raise NotImplementedError("search is Phase 3")
+    def search(self, query_vector: list[float], k: int = 5) -> list["SearchResult"]:
+        """Top-``k`` chunks by cosine similarity to ``query_vector``, best first.
+
+        Vectors are unit-normalized at embed time, so cosine similarity equals the dot
+        product; either way the ranking is the same. No ANN index is ever built on these
+        tables, so this is an exact brute-force scan — correct at any corpus size, and
+        fast enough while courses are thousands of chunks rather than millions.
+
+        LanceDB returns a *distance*; the similarity callers want is ``1 - distance``.
+        That conversion is pinned by a test on hand-computed vectors rather than trusted,
+        since the formula lives in Lance's Rust core and is not part of its Python API.
+
+        Raises:
+            ValueError: if ``query_vector`` is not this table's width — otherwise the
+                mismatch surfaces as an opaque error from deep inside the query engine.
+        """
+        if len(query_vector) != self.dims:
+            raise ValueError(
+                f"Query vector has {len(query_vector)} dims, but this course stores "
+                f"{self.dims}-dim vectors. The query must be embedded by the same model "
+                f"as the course."
+            )
+        if k <= 0 or self._table.count_rows() == 0:
+            return []
+
+        # Project the vector column away: it is not needed to rank (LanceDB already
+        # did that) or to cite, and it is far larger than every other field combined.
+        # ChunkRecord.from_dict reads "vector" with .get(), so the records rebuild fine.
+        # "_distance" is named explicitly: Lance auto-adds it to a projected search today
+        # but warns that it will stop doing so.
+        columns = [f.name for f in self._table.schema if f.name != "vector"]
+        columns.append("_distance")
+        rows = (
+            self._table.search(query_vector)
+            .metric("cosine")
+            .select(columns)
+            .limit(k)
+            .to_arrow()
+            .to_pylist()
+        )
+        return [
+            SearchResult(chunk=ChunkRecord.from_dict(row), score=1.0 - float(row["_distance"]))
+            for row in rows
+        ]

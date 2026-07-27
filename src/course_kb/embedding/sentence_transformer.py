@@ -41,6 +41,15 @@ _KNOWN_DIMS = {
     "BAAI/bge-small-en-v1.5": 384,
 }
 
+# Retrieval-time instruction prefix, applied to QUERIES only. bge was trained with an
+# asymmetric objective: passages are embedded plainly, queries are prefixed, and the two
+# land in the same space only if that asymmetry is reproduced at search time. A model
+# not listed here wants no prefix (MiniLM/mpnet are symmetric), which is why this is a
+# per-model table and not a class attribute.
+_QUERY_PREFIXES = {
+    "BAAI/bge-small-en-v1.5": "Represent this sentence for searching relevant passages: ",
+}
+
 _INSTALL_HINT = (
     "sentence-transformers is not installed. Install the local embedding extra:\n"
     '  pip install -e ".[local]"\n'
@@ -78,6 +87,7 @@ class SentenceTransformerEmbedder:
             raise ImportError(_INSTALL_HINT)
 
         self.model_id = model_id
+        self.query_prefix = _QUERY_PREFIXES.get(model_id, "")
         self._cache_dir = Path(cache_dir) if cache_dir is not None else None
         self._batch_size = max(1, batch_size)
         self._model: Any | None = None
@@ -131,6 +141,19 @@ class SentenceTransformerEmbedder:
             show_progress_bar=False,
         )
         return [[float(x) for x in vector] for vector in vectors]
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Embed retrieval *queries*. Passages must go through :meth:`embed` instead.
+
+        This is the query half of an asymmetric model: it prepends
+        :attr:`query_prefix` and then embeds normally. For a model with no prefix it is
+        exactly ``embed``, so callers never need to branch on the model.
+
+        Deliberately not part of the ``Embedder`` protocol — retrieval discovers it with
+        ``getattr``, the same way the CLI discovers ``count_tokens``. A minimal embedder
+        (``DummyEmbedder``) simply does not define it, and search falls back to ``embed``.
+        """
+        return self.embed([self.query_prefix + text for text in texts])
 
     # ----------------------------------------------------------------------- #
 

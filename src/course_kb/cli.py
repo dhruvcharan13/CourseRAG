@@ -1,8 +1,8 @@
 """The ``kb`` command-line interface.
 
-Wires the Phase 0 contracts together end to end. ``init-course`` and ``ingest``
-are fully working (ingest proves parse -> chunk -> embed -> store); ``list`` and
-``info`` inspect existing courses; ``search`` is a Phase 3 stub.
+``ingest`` runs parse -> chunk -> embed -> store; ``search`` runs the same pipeline
+in reverse, embedding a query and returning cited chunks; ``eval`` scores that search
+against a hand-labelled question set. ``list``/``info``/``chunks`` inspect.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import argparse
 import json
 import statistics
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,9 +19,20 @@ from course_kb import __version__
 from course_kb.chunker import chunk_document, estimate_tokens, is_slide_deck, keep_elements
 from course_kb.config import Config, load_config
 from course_kb.embedding import Embedder, get_embedder
+from course_kb.evaluation import (
+    EVAL_DIR,
+    EVAL_K,
+    QueryOutcome,
+    first_hit_rank,
+    load_eval_set,
+    score_run,
+    score_spread,
+)
 from course_kb.manifest import Manifest, manifest_path, read_manifest, write_manifest
 from course_kb.parsing import ParsedDocument, get_parser_for
 from course_kb.records import ChunkRecord
+from course_kb.reranking import get_reranker
+from course_kb.retrieval import SearchResult, embed_query, rerank
 from course_kb.store import CourseStore
 
 
@@ -107,7 +119,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     manifest = read_manifest(course_dir)
     embedder = get_embedder(cfg.embedder, cfg)
     if (embedder.model_id, embedder.dims) != (manifest.embedding_model, manifest.dims):
-        _print_embedder_mismatch(course_id, course_dir, manifest, embedder)
+        _print_embedder_mismatch(
+            course_id, course_dir, manifest, embedder, "nothing was ingested"
+        )
         return 1
 
     store = CourseStore.open_or_create(course_dir, manifest.dims)
@@ -146,8 +160,20 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     # Skip chunks already stored for THIS file (by content hash) so re-ingest is
     # a no-op, while identical slides shared across files are kept per file.
-    existing = store.existing_hashes(path.name)
-    new_records = [r for r in records if r.content_hash not in existing]
+    #
+    # The seen-set carries forward through this batch, not just the stored snapshot:
+    # a deck with two identical pages ("Intentionally blank.", a bare "UML Diagram"
+    # caption) yields two identical chunks in ONE run, and checking only what was
+    # already stored would let both through. Re-ingest hid it — the second run found
+    # them stored and reported no-op — so the index looked deduped while holding
+    # duplicate vectors that compete for the same top-k slots.
+    seen = store.existing_hashes(path.name)
+    new_records = []
+    for record in records:
+        if record.content_hash in seen:
+            continue
+        seen.add(record.content_hash)
+        new_records.append(record)
     if not new_records:
         print(
             f"No new chunks from {path.name}; already up to date in "
@@ -224,11 +250,18 @@ def _warn_oversize(embedder: Embedder, records: list[ChunkRecord], cfg: Config) 
 
 
 def _print_embedder_mismatch(
-    course_id: str, course_dir: Path, manifest: Manifest, embedder: Embedder
+    course_id: str, course_dir: Path, manifest: Manifest, embedder: Embedder, consequence: str
 ) -> None:
-    """Explain an embedder/course mismatch and how to fix it. Nothing was written."""
+    """Explain an embedder/course mismatch and how to fix it. Nothing was written.
+
+    Shared by ingest and search because the failure is the same one at both ends: a
+    query embedded by a different model than the passages lands in a different space,
+    where similarity scores are meaningless rather than merely worse. ``consequence``
+    is the caller's half of the first line ("nothing was ingested" / "refusing to
+    search").
+    """
     print(
-        f"error: embedder mismatch for course '{course_id}' — nothing was ingested.\n"
+        f"error: embedder mismatch for course '{course_id}' — {consequence}.\n"
         f"  course was built with: {manifest.embedding_model} (dims={manifest.dims})\n"
         f"  current config selects: {embedder.model_id} (dims={embedder.dims})\n"
         f"Vectors from different models are not comparable, and a course's vector width "
@@ -345,8 +378,295 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_for_search(cfg: Config, course_id: str) -> tuple[CourseStore, Embedder] | None:
+    """Resolve a course for querying, or explain why it cannot be queried and return None.
+
+    The embedder check is the same invariant ingest enforces, applied at the other end:
+    a query embedded by a different model than the passages lands in a different vector
+    space, where the scores are not merely worse but meaningless. Refusing is the only
+    honest option — there is no partial answer to give.
+    """
+    course_dir = _course_dir(cfg, course_id)
+    if not manifest_path(course_dir).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return None
+
+    manifest = read_manifest(course_dir)
+    embedder = get_embedder(cfg.embedder, cfg)
+    if (embedder.model_id, embedder.dims) != (manifest.embedding_model, manifest.dims):
+        _print_embedder_mismatch(
+            course_id, course_dir, manifest, embedder, "refusing to search"
+        )
+        return None
+
+    if _is_dummy(manifest.embedding_model):
+        print(
+            "warning: this course was built with dummy vectors, which are random hashes "
+            "with no semantic meaning. These rankings are noise, not retrieval.",
+            file=sys.stderr,
+        )
+
+    return CourseStore.open_or_create(course_dir, manifest.dims), embedder
+
+
+def _snippet(text: str, width: int = 160) -> str:
+    """One-line preview of a chunk: collapsed whitespace, truncated."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
+
+
+def _print_results(results: list[SearchResult]) -> None:
+    """Ranked, human-readable hits — score first, then the citation, then the text."""
+    for rank, result in enumerate(results, start=1):
+        chunk = result.chunk
+        page = f"p{chunk.page}" if chunk.page is not None else "p?"
+        # Both scales when reranked: the cross-encoder logit decided the order, the
+        # cosine says where the dense stage had put it.
+        scores = (
+            f"{result.score:.3f}"
+            if result.rerank_score is None
+            else f"ce {result.rerank_score:+.2f} | cos {result.score:.3f}"
+        )
+        print(f"{rank}. [{scores}] {chunk.source_file} {page}")
+        if chunk.title:
+            print(f"   {chunk.title}")
+        print(f"   {_snippet(chunk.text)}")
+        print()
+
+
+def _retrieve(
+    cfg: Config, store: CourseStore, embedder: Embedder, query: str, k: int, *,
+    use_rerank: bool, candidates: int,
+) -> tuple[list[SearchResult], list[SearchResult]]:
+    """Run the retrieval pipeline; return ``(final, dense_only)``.
+
+    With reranking off, this is exactly the Phase-3 path — one dense search at depth
+    ``k`` and nothing else, so the committed baseline cannot shift underneath us.
+
+    With it on, the dense stage widens to ``candidates`` (never below ``k``, or the
+    reranker could not fill the requested page), the cross-encoder rescores those, and
+    the top ``k`` come back. The dense-only ordering is returned alongside because
+    every caller that reranks also wants the A/B, and stage one already computed it.
+    """
+    vector = embed_query(embedder, query)
+    if not use_rerank:
+        dense = store.search(vector, k=k)
+        return dense, dense
+
+    depth = max(candidates, k)
+    dense = store.search(vector, k=depth)
+    reranker = get_reranker(cfg.reranker, cfg)
+    return rerank(reranker, query, dense)[:k], dense[:k]
+
+
 def cmd_search(args: argparse.Namespace) -> int:
-    print("not implemented (Phase 3)")
+    """Embed a query and return the course's top-k most similar chunks, with citations."""
+    cfg = load_config()
+    opened = _open_for_search(cfg, args.course_id)
+    if opened is None:
+        return 1
+    store, embedder = opened
+
+    if store.count() == 0:
+        print(f"Course '{args.course_id}' has no chunks yet. Run: kb ingest ...", file=sys.stderr)
+        return 1
+
+    results, _ = _retrieve(
+        cfg, store, embedder, args.query, args.k,
+        use_rerank=args.rerank, candidates=args.candidates or cfg.rerank_candidates,
+    )
+
+    if args.json:
+        payload = [r.to_dict(rank) for rank, r in enumerate(results, start=1)]
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(f"\n{len(results)} result(s) for {args.query!r}", file=sys.stderr)
+        return 0
+
+    if not results:
+        print(f"No results for {args.query!r}.")
+        return 0
+
+    print(f"{len(results)} result(s) for {args.query!r}:\n")
+    _print_results(results)
+    # Scores are informational: no relevance threshold is applied. A meaningful floor is
+    # model-specific and has to be calibrated from eval data, not guessed. See `kb eval`.
+    return 0
+
+
+def _print_ab(
+    dense: list[QueryOutcome], reranked: list[QueryOutcome], k: int, seconds: list[float]
+) -> None:
+    """Dense-only vs reranked, arranged so a regression cannot hide behind gross fixes.
+
+    The headline is NET, not the count of things that improved. A reranker that fixes
+    four queries and breaks three is worth +1, and the +1 is what gets reported.
+    """
+    before = score_run(dense, k=k)
+    after = score_run(reranked, k=k)
+    pairs = list(zip(dense, reranked))
+    n = len(pairs)
+
+    fixed = [d.query.id for d, r in pairs if d.rank != 1 and r.rank == 1]
+    broke = [d.query.id for d, r in pairs if d.rank == 1 and r.rank != 1]
+    both_hit = sum(1 for d, r in pairs if d.rank == 1 and r.rank == 1)
+    neither = sum(1 for d, r in pairs if d.rank != 1 and r.rank != 1)
+
+    print(f"NET rank-1 change: {len(fixed) - len(broke):+d}   "
+          f"(fixed {len(fixed)}, broke {len(broke)})")
+    print()
+    print("  movement matrix — every query lands in exactly one cell")
+    print(f"    {'':<22}{'reranked rank-1':>16}{'reranked not':>15}")
+    print(f"    {'dense rank-1':<22}{both_hit:>16}{len(broke):>15}   <- broke")
+    print(f"    {'dense not rank-1':<22}{len(fixed):>16}{neither:>15}")
+    print(f"    {'':<22}{'^ fixed':>16}")
+    print()
+
+    print(f"  {'metric':<12}{'dense':>9}{'reranked':>11}{'delta':>9}")
+    for cutoff in sorted(before.recall):
+        b, a = before.recall[cutoff], after.recall[cutoff]
+        print(f"  {'recall@' + str(cutoff):<12}{b:>8.1%}{a:>11.1%}{a - b:>+9.1%}")
+    print(f"  {'MRR@' + str(k):<12}{before.mrr:>8.3f}{after.mrr:>11.3f}{after.mrr - before.mrr:>+9.3f}")
+    print()
+
+    # Regressions first: a demotion is the expensive kind of change, so it is not
+    # allowed to sit below a list of wins where it can be skimmed past.
+    def delta(d: QueryOutcome, r: QueryOutcome) -> int:
+        lo = d.rank if d.rank is not None else k + 1
+        hi = r.rank if r.rank is not None else k + 1
+        return hi - lo
+
+    moved = [(d, r) for d, r in pairs if d.rank != r.rank]
+    if moved:
+        print(f"  rank movements ({len(moved)} of {n} queries), worst regression first:")
+        for d, r in sorted(moved, key=lambda t: -delta(*t)):
+            arrow = "WORSE" if delta(d, r) > 0 else "better"
+            print(f"    {d.query.id:<6}{str(d.rank or '>k'):>4} -> {str(r.rank or '>k'):<4} {arrow}")
+    else:
+        print("  no query changed rank.")
+    print()
+
+    if seconds:
+        ordered = sorted(seconds)
+        print(f"  latency/query: median {1000 * ordered[len(ordered) // 2]:.0f} ms, "
+              f"max {1000 * ordered[-1]:.0f} ms, total {sum(seconds):.1f} s "
+              f"(includes the one-off model load)")
+        print()
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Score search against a hand-labelled eval set: recall@k, MRR, and every miss."""
+    cfg = load_config()
+    course_id = args.course_id
+
+    eval_path = Path(args.set) if args.set else Path(EVAL_DIR) / f"{course_id}.json"
+    if not eval_path.is_file():
+        print(
+            f"No eval set at {eval_path}. Write one, or pass --set PATH.",
+            file=sys.stderr,
+        )
+        return 1
+    eval_set = load_eval_set(eval_path)
+
+    if eval_set.course != course_id:
+        print(
+            f"error: {eval_path} is an eval set for '{eval_set.course}', not '{course_id}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    opened = _open_for_search(cfg, course_id)
+    if opened is None:
+        return 1
+    store, embedder = opened
+
+    k = args.k
+    candidates = args.candidates or cfg.rerank_candidates
+    # Every query runs once at the deepest cutoff; the shallower ones are prefixes of
+    # the same ranking, so recall@1..@k costs no extra searches.
+    #
+    # With --rerank the dense ranking is stage one anyway, so both rankings come out of
+    # the same pass and the A/B is free. Scoring both is the whole point: a reranker is
+    # only worth keeping net of what it demotes, and that is invisible from the
+    # reranked numbers alone.
+    outcomes, dense_outcomes = [], []
+    rerank_seconds = []
+    for q in eval_set.queries:
+        started = time.perf_counter()
+        final, dense = _retrieve(
+            cfg, store, embedder, q.query, k,
+            use_rerank=args.rerank, candidates=candidates,
+        )
+        rerank_seconds.append(time.perf_counter() - started)
+        outcomes.append(QueryOutcome(query=q, results=final, rank=first_hit_rank(final, q.gold)))
+        dense_outcomes.append(
+            QueryOutcome(query=q, results=dense, rank=first_hit_rank(dense, q.gold))
+        )
+    report = score_run(outcomes, k=k)
+
+    print(f"Eval:            {eval_path}")
+    print(f"Course:          {course_id} ({store.count()} chunks)")
+    print(f"Embedding model: {embedder.model_id}")
+    if args.rerank:
+        print(f"Reranker:        {get_reranker(cfg.reranker, cfg).model_id} "
+              f"(top-{max(candidates, k)} candidates)")
+    print(f"Queries:         {len(outcomes)}")
+    print()
+
+    if args.rerank:
+        _print_ab(dense_outcomes, outcomes, k, rerank_seconds)
+    for cutoff, value in sorted(report.recall.items()):
+        hits = round(value * len(outcomes))
+        print(f"  recall@{cutoff:<3}{value:6.1%}   ({hits}/{len(outcomes)})")
+    print(f"  MRR@{k:<5}{report.mrr:6.3f}")
+    print()
+    print("  recall@k here is a hit-rate: each query has one intended answer, labelled")
+    print("  with the page(s) it may legitimately appear on. MRR is truncated at k, so")
+    print(f"  an answer ranked below {k} scores 0 rather than 1/rank.")
+    print()
+
+    # Per-query ranks, not just the aggregate: a query answered at rank 3 is a success by
+    # recall@5 and a near-failure in practice, and the summary alone cannot tell them
+    # apart. This is also the per-query score data a Phase 4 threshold gets fitted to.
+    print("Per query (rank of the correct chunk, its score, and the top-1 score):")
+    print(f"  {'id':<5}{'rank':>5}{'gold':>8}{'top1':>8}   query")
+    for outcome in outcomes:
+        rank = str(outcome.rank) if outcome.hit_at(k) else f">{k}"
+        gold_score = f"{outcome.gold_score:.3f}" if outcome.hit_at(k) else "—"
+        top_score = f"{outcome.top_score:.3f}" if outcome.top_score is not None else "—"
+        print(
+            f"  {outcome.query.id:<5}{rank:>5}{gold_score:>8}{top_score:>8}   "
+            f"{_snippet(outcome.query.query, 60)}"
+        )
+    print()
+
+    hit_top = [o.top_score for o in outcomes if o.hit_at(k) and o.top_score is not None]
+    miss_top = [o.top_score for o in outcomes if not o.hit_at(k) and o.top_score is not None]
+    gold = [o.gold_score for o in outcomes if o.hit_at(k) and o.gold_score is not None]
+    print("Scores (min / median / max) — reported, not thresholded:")
+    print(f"  top-1, hits:   {score_spread(hit_top)}")
+    print(f"  top-1, misses: {score_spread(miss_top)}")
+    print(f"  correct chunk: {score_spread(gold)}")
+    print()
+
+    if not report.misses:
+        print("No misses.")
+        return 0
+
+    print(f"Misses ({len(report.misses)}/{len(outcomes)}):")
+    for outcome in report.misses:
+        expected = ", ".join(f"{f} p{p}" for f, p in sorted(outcome.query.gold))
+        print(f"\n  [{outcome.query.id}] {outcome.query.query}")
+        print(f"    expected: {expected}")
+        if outcome.query.note:
+            print(f"    note:     {outcome.query.note}")
+        print(f"    got:      (top {min(args.show, len(outcome.results))} of {len(outcome.results)})")
+        for rank, result in enumerate(outcome.results[: args.show], start=1):
+            chunk = result.chunk
+            page = f"p{chunk.page}" if chunk.page is not None else "p?"
+            print(
+                f"      {rank}. [{result.score:.3f}] {chunk.source_file} {page} — "
+                f"{_snippet(chunk.text, 80)}"
+            )
     return 0
 
 
@@ -421,6 +741,26 @@ def _print_chunk_report(
 # --------------------------------------------------------------------------- #
 
 
+def _add_rerank_flags(parser: argparse.ArgumentParser) -> None:
+    """Opt-in reranking, shared by ``search`` and ``eval``.
+
+    Off by default: dense-only is the measured baseline, and it stays the default until
+    the numbers say otherwise. The flag is the switch; ``config.reranker`` only chooses
+    which model runs when the switch is on.
+    """
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="Rescore the top dense candidates with a cross-encoder (needs the [local] extra).",
+    )
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=None,
+        help="Dense candidates to rerank (default: config rerank_candidates, 20).",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kb", description="Per-course RAG knowledge base.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -450,9 +790,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_info.add_argument("course_id")
     p_info.set_defaults(func=cmd_info)
 
-    p_search = sub.add_parser("search", help="Retrieve chunks (Phase 3).")
-    p_search.add_argument("query", nargs="*", help="Search query (ignored in Phase 0).")
+    p_search = sub.add_parser("search", help="Retrieve a course's chunks by similarity.")
+    p_search.add_argument("course_id")
+    p_search.add_argument("query", help="What to search for, in natural language.")
+    p_search.add_argument("-k", type=int, default=5, help="How many results to return (default: 5).")
+    p_search.add_argument("--json", action="store_true", help="Emit JSON on stdout for piping.")
+    _add_rerank_flags(p_search)
     p_search.set_defaults(func=cmd_search)
+
+    p_eval = sub.add_parser("eval", help="Score search against a labelled eval set.")
+    p_eval.add_argument("course_id")
+    p_eval.add_argument("--set", help=f"Eval set path (default: {EVAL_DIR}/<course>.json).")
+    p_eval.add_argument("-k", type=int, default=EVAL_K, help=f"Ranking depth (default: {EVAL_K}).")
+    p_eval.add_argument(
+        "--show", type=int, default=3, help="Results to print per miss (default: 3)."
+    )
+    _add_rerank_flags(p_eval)
+    p_eval.set_defaults(func=cmd_eval)
 
     p_chunks = sub.add_parser(
         "chunks", help="Parse + chunk a file and print chunks as JSON (no embed/store)."

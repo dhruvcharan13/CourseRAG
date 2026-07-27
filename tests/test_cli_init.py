@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from course_kb.cli import main
 
 
@@ -72,7 +74,12 @@ def test_unavailable_embedder_creates_nothing(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "course-kb" / "courses" / "CS240-W26").exists()
 
 
-def test_search_stub(tmp_path, monkeypatch, capsys):
+def test_search_needs_a_course_and_a_query(tmp_path, monkeypatch, capsys):
+    """``search`` is no longer a stub; it takes a course and refuses without one.
+
+    Behaviour lives in tests/test_search_cli.py — this only pins the argument contract.
+    """
     monkeypatch.chdir(tmp_path)
-    assert main(["search", "anything"]) == 0
-    assert "not implemented (Phase 3)" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        main(["search", "anything"])
+    assert exc.value.code == 2

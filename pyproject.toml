@@ -15,6 +15,11 @@ dev = ["pytest"]
 # Real local embeddings. Kept optional (and lazily imported) so the core install
 # stays lean and the DummyEmbedder path needs nothing beyond the stdlib.
 local = ["sentence-transformers>=3.0"]
+# Expose the knowledge base to an agent over MCP (`python -m course_kb.mcp_server`).
+# Optional, and a heavier tree than the core: the SDK pulls starlette, uvicorn and
+# httpx for transports this server never uses. Nothing in the package imports
+# `mcp_server`, so `mcp` can never reach the CLI or the retrieval path.
+mcp = ["mcp>=2.0"]
 
 [project.scripts]
 kb = "course_kb.cli:main"

@@ -4,6 +4,19 @@ from __future__ import annotations
 
 import pytest
 
+from course_kb.config import ROOT_ENV_VAR
+
+
+@pytest.fixture(autouse=True)
+def _isolate_root_env(monkeypatch):
+    """Never let the developer's own ``COURSE_KB_ROOT`` reach a test.
+
+    It overrides the data root by design, so a shell that exports it would silently
+    point every ``tmp_path`` course at a real knowledge base. Tests that want it set it
+    themselves, after this has cleared it.
+    """
+    monkeypatch.delenv(ROOT_ENV_VAR, raising=False)
+
 
 @pytest.fixture
 def dummy_config(tmp_path):

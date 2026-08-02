@@ -3,13 +3,22 @@
 A ``Config`` dataclass with sane defaults, optionally overridden by a
 ``config.toml`` loaded with the stdlib ``tomllib``. Works with no config file and
 no environment variables — the zero-config default path.
+
+The one environment variable, ``COURSE_KB_ROOT``, exists because the default ``root``
+is *relative* and every command resolves it against the current working directory.
+That is fine for a CLI you run from your project, and wrong for anything launched by
+something else. See :func:`load_config`.
 """
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
+
+#: Environment variable that overrides the data root with an absolute path.
+ROOT_ENV_VAR = "COURSE_KB_ROOT"
 
 
 @dataclass
@@ -75,17 +84,32 @@ def load_config(path: Path | None = None) -> Config:
     current working directory is read if present. If neither exists, defaults are
     returned. Unknown keys in the file are ignored so the config surface can grow
     without breaking older files.
+
+    ``root`` resolves in this order, most explicit first::
+
+        COURSE_KB_ROOT (env)  ->  absolute, via .resolve()
+        config.toml `root =`  ->  as written
+        neither               ->  Path("course-kb"), relative to the cwd
+
+    The environment wins because it is the per-process signal, and because it is the
+    only one a *caller* can set: a long-running process started by another program —
+    the MCP server, launched by an editor or agent — inherits that program's working
+    directory, not the repository's. Without an absolute root it would resolve
+    ``course-kb`` against some unrelated directory, find no courses, and report an
+    empty knowledge base as though that were the truth. Unset, nothing changes.
     """
     toml_path = path if path is not None else Path("config.toml")
-    if not toml_path.exists():
-        return Config()
+    kwargs: dict[str, object] = {}
+    if toml_path.exists():
+        with toml_path.open("rb") as fh:
+            data = tomllib.load(fh)
+        known = {f.name for f in fields(Config)}
+        kwargs = {k: v for k, v in data.items() if k in known}
+        for key in ("root", "cache_dir"):
+            if kwargs.get(key) is not None:
+                kwargs[key] = Path(str(kwargs[key])).expanduser()
 
-    with toml_path.open("rb") as fh:
-        data = tomllib.load(fh)
-
-    known = {f.name for f in fields(Config)}
-    kwargs: dict[str, object] = {k: v for k, v in data.items() if k in known}
-    for key in ("root", "cache_dir"):
-        if kwargs.get(key) is not None:
-            kwargs[key] = Path(str(kwargs[key])).expanduser()
+    env_root = os.environ.get(ROOT_ENV_VAR)
+    if env_root:
+        kwargs["root"] = Path(env_root).expanduser().resolve()
     return Config(**kwargs)

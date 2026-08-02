@@ -10,21 +10,23 @@ Cloud providers (OpenAI/Voyage/Gemini) are opt-in alternates behind the same
 interface, added in a later phase. (An Anthropic/Claude API key cannot produce
 embeddings — Claude is generation-only — so it is never the embedding default.)
 
-> Status: **Phase 3** — dense retrieval. Parsing, chunking, per-course stores, real
-> local embeddings (384-dim bge), and `kb search`/`kb eval` all work. Hybrid retrieval
-> (BM25 + rank fusion, reranking), an MCP server, and a D2L integration come in later
-> phases.
+> Status: **working**. Parsing, chunking, per-course stores, real local embeddings
+> (384-dim bge), `kb search`/`kb eval`, an opt-in cross-encoder reranker, and an MCP
+> server all work. Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
+> — see [The dense-only baseline](#the-dense-only-baseline). A D2L integration comes later.
 
 ## Install
 
 ```bash
 pip install -e ".[dev,local]"   # real local embeddings (pulls torch, ~800MB on disk)
 pip install -e ".[dev]"         # lean install: dummy embeddings only
+pip install -e ".[local,mcp]"   # + expose the knowledge base to an agent over MCP
 ```
 
 Runtime dependencies are `lancedb` (which bundles `pyarrow`) and `pymupdf`. The
-`local` extra adds `sentence-transformers`; it is imported lazily, so the lean
-install and `kb --help` never pay for it.
+`local` extra adds `sentence-transformers` and the `mcp` extra adds the MCP SDK; both
+are imported lazily — and nothing in the package imports the server module — so the
+lean install and `kb --help` never pay for either. A test asserts it.
 
 ## Usage
 
@@ -185,6 +187,39 @@ reproducible from the documents without shipping them. A test asserts every labe
 actually exists in its PDF, so a typo'd label fails loudly instead of masquerading as a
 permanent retrieval miss.
 
+## MCP server
+
+Exposes the knowledge base to an agent, so you can ask about your own course materials
+and get answers cited back to a file and page. Three read-only tools —
+`list_courses`, `course_info`, and `search_course(course, query, k=5, rerank=False)`.
+Ingestion stays in the CLI: the agent can read the knowledge base, never rewrite it.
+
+```bash
+claude mcp add course-kb \
+  -e COURSE_KB_ROOT=/abs/path/to/repo/course-kb \
+  -- /abs/path/to/repo/.venv/bin/python -m course_kb.mcp_server
+```
+
+**`COURSE_KB_ROOT` is not optional.** A stdio server inherits the *client's* working
+directory, and the default `root` is relative — so without an absolute root the server
+resolves `course-kb` against whatever directory the editor launched from, finds no
+courses, and reports an empty knowledge base as though that were true. It is the one
+failure here that looks like success. `load_config` resolves `COURSE_KB_ROOT` (env,
+absolute) over `config.toml`'s `root` over the relative default, and a test proves the
+tools find the real courses from a foreign cwd — with a negative control showing they
+find nothing without it.
+
+Two consequences of the stdio transport shape the module. Stdout *is* the JSON-RPC
+channel, so nothing on this path may print — which is why the tools wrap `retrieval`
+and the manifest directly rather than reusing `cli.py`'s `cmd_*` functions, all of
+which print. And the server sets `HF_HUB_OFFLINE=1` (via `setdefault`, so you can
+override it): the models are already cached by the time a course is searchable, so the
+Hub round trip only checks for updates nobody asked for. Skipping it takes a cold
+search from 3.9s to 2.5s and a cold reranked search from 2.1s to 0.2s, and lets a
+server started with no network work rather than stall.
+
+Warm searches are ~13ms. The first one pays the model load.
+
 ## On-disk layout
 
 ```
@@ -270,6 +305,10 @@ machines — assert cosine thresholds and rank order instead.
 
 Optional. Drop a `config.toml` in the working directory to override defaults;
 otherwise sane defaults are used with no file and no environment variables.
+
+One environment variable, `COURSE_KB_ROOT`, overrides `root` with an absolute path and
+takes precedence over the file. It exists for processes that don't control their own
+working directory — see [MCP server](#mcp-server). Unset, nothing changes.
 
 ```toml
 root = "course-kb"

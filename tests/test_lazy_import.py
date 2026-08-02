@@ -4,6 +4,10 @@ Importing torch costs seconds, so ``kb --help``, course creation, and the dummy 
 all have to stay clear of it. Each check runs in a fresh subprocess and reports which
 heavy modules ended up in ``sys.modules``.
 
+``mcp`` and its transport dependencies are on the same list. Nothing in the package
+imports :mod:`course_kb.mcp_server`, and that has to stay true — it is the only reason
+the ``[mcp]`` extra can pull starlette and uvicorn without the CLI paying for them.
+
 These are only meaningful when the ``[local]`` extra is installed — otherwise the
 modules are absent no matter what the code does — so they skip without it.
 """
@@ -21,7 +25,7 @@ pytestmark = pytest.mark.skipif(
     not is_available(), reason="vacuous without the [local] extra installed"
 )
 
-HEAVY = ("torch", "sentence_transformers", "transformers")
+HEAVY = ("torch", "sentence_transformers", "transformers", "mcp", "starlette", "uvicorn")
 
 _REPORT = f"""
 import sys
@@ -114,6 +118,25 @@ from course_kb.cli import main
 tmp = tempfile.mkdtemp()
 import os; os.chdir(tmp)
 pathlib.Path("config.toml").write_text('embedder = "dummy"\\nreranker = "dummy"\\n')
+pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
+assert main(["init-course", "C"]) == 0
+assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
+assert main(["search", "C", "tower height", "--json"]) == 0
+"""
+        )
+        == []
+    )
+
+
+def test_the_cli_never_imports_the_mcp_sdk():
+    """A dense search is the CLI's heaviest path; the server's SDK is not part of it."""
+    assert (
+        _heavy_modules_after(
+            """
+import pathlib, tempfile, os
+from course_kb.cli import main
+os.chdir(tempfile.mkdtemp())
+pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
 pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
 assert main(["init-course", "C"]) == 0
 assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0

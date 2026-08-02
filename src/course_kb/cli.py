@@ -32,7 +32,7 @@ from course_kb.manifest import Manifest, manifest_path, read_manifest, write_man
 from course_kb.parsing import ParsedDocument, get_parser_for
 from course_kb.records import ChunkRecord
 from course_kb.reranking import get_reranker
-from course_kb.retrieval import SearchResult, embed_query, rerank
+from course_kb.retrieval import SearchResult, retrieve
 from course_kb.store import CourseStore
 
 
@@ -434,31 +434,6 @@ def _print_results(results: list[SearchResult]) -> None:
         print()
 
 
-def _retrieve(
-    cfg: Config, store: CourseStore, embedder: Embedder, query: str, k: int, *,
-    use_rerank: bool, candidates: int,
-) -> tuple[list[SearchResult], list[SearchResult]]:
-    """Run the retrieval pipeline; return ``(final, dense_only)``.
-
-    With reranking off, this is exactly the Phase-3 path — one dense search at depth
-    ``k`` and nothing else, so the committed baseline cannot shift underneath us.
-
-    With it on, the dense stage widens to ``candidates`` (never below ``k``, or the
-    reranker could not fill the requested page), the cross-encoder rescores those, and
-    the top ``k`` come back. The dense-only ordering is returned alongside because
-    every caller that reranks also wants the A/B, and stage one already computed it.
-    """
-    vector = embed_query(embedder, query)
-    if not use_rerank:
-        dense = store.search(vector, k=k)
-        return dense, dense
-
-    depth = max(candidates, k)
-    dense = store.search(vector, k=depth)
-    reranker = get_reranker(cfg.reranker, cfg)
-    return rerank(reranker, query, dense)[:k], dense[:k]
-
-
 def cmd_search(args: argparse.Namespace) -> int:
     """Embed a query and return the course's top-k most similar chunks, with citations."""
     cfg = load_config()
@@ -471,7 +446,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(f"Course '{args.course_id}' has no chunks yet. Run: kb ingest ...", file=sys.stderr)
         return 1
 
-    results, _ = _retrieve(
+    results, _ = retrieve(
         cfg, store, embedder, args.query, args.k,
         use_rerank=args.rerank, candidates=args.candidates or cfg.rerank_candidates,
     )
@@ -592,7 +567,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     rerank_seconds = []
     for q in eval_set.queries:
         started = time.perf_counter()
-        final, dense = _retrieve(
+        final, dense = retrieve(
             cfg, store, embedder, q.query, k,
             use_rerank=args.rerank, candidates=candidates,
         )

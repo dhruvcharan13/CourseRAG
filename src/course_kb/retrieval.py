@@ -2,9 +2,13 @@
 
 Stored vectors are unit-normalized, so cosine similarity is just their dot product
 and ranking by it is ranking by relevance. The actual top-k scan lives in
-:meth:`course_kb.store.CourseStore.search`; this module holds the two pieces that
-are not the store's business — how a *query* gets embedded, and what a result looks
-like once it comes back.
+:meth:`course_kb.store.CourseStore.search`; this module holds everything that is not
+the store's business — how a *query* gets embedded, what a result looks like once it
+comes back, and how the optional rerank stage composes with the dense one.
+
+:func:`retrieve` is the entry point every front end shares. Keeping the pipeline here
+rather than in one of them is what lets the CLI and the MCP server return identical
+rankings without either importing the other.
 
 Scores are reported, never thresholded. A relevance floor is model-specific (bge's
 unrelated-pair floor sits near 0.63, MiniLM's nowhere near it), so a cutoff has to be
@@ -17,10 +21,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from course_kb.records import ChunkRecord
+from course_kb.reranking import get_reranker
 
 if TYPE_CHECKING:
+    from course_kb.config import Config
     from course_kb.embedding import Embedder
     from course_kb.reranking import Reranker
+    from course_kb.store import CourseStore
 
 
 def embed_query(embedder: "Embedder", query: str) -> list[float]:
@@ -92,3 +99,28 @@ def rerank(reranker: "Reranker", query: str, candidates: list[SearchResult]) -> 
         for c, s in zip(candidates, scores)
     ]
     return sorted(scored, key=lambda r: -r.rerank_score)
+
+
+def retrieve(
+    cfg: "Config", store: "CourseStore", embedder: "Embedder", query: str, k: int, *,
+    use_rerank: bool = False, candidates: int | None = None,
+) -> tuple[list[SearchResult], list[SearchResult]]:
+    """Run the retrieval pipeline; return ``(final, dense_only)``.
+
+    With reranking off, this is exactly the Phase-3 path — one dense search at depth
+    ``k`` and nothing else, so the committed baseline cannot shift underneath us.
+
+    With it on, the dense stage widens to ``candidates`` (never below ``k``, or the
+    reranker could not fill the requested page), the cross-encoder rescores those, and
+    the top ``k`` come back. The dense-only ordering is returned alongside because
+    every caller that reranks also wants the A/B, and stage one already computed it.
+    """
+    vector = embed_query(embedder, query)
+    if not use_rerank:
+        dense = store.search(vector, k=k)
+        return dense, dense
+
+    depth = max(candidates or cfg.rerank_candidates, k)
+    dense = store.search(vector, k=depth)
+    reranker = get_reranker(cfg.reranker, cfg)
+    return rerank(reranker, query, dense)[:k], dense[:k]

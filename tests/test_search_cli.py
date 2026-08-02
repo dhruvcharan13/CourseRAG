@@ -274,3 +274,67 @@ def test_eval_rerank_prints_a_paired_ab_with_a_net_headline(rerank_course, tmp_p
     assert "latency/query" in out
     # The dummy reverses stage one, so the exact-text query must be demoted: net < 0.
     assert "NET rank-1 change: -1" in out
+
+
+# --------------------------------------------------------------------------- #
+# Document scoping: kb search --file, kb show
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def two_doc_course(tmp_path, monkeypatch, dummy_config):
+    """Two documents in one course, so scoping has something to exclude."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["init-course", "CS240"]) == 0
+    assert main(["ingest", "CS240", str(FIXTURES / "slides.pdf"), "--category", "lecture"]) == 0
+    other = tmp_path / "other.txt"
+    other.write_text("Amortized analysis uses the banker's method.\n", encoding="utf-8")
+    assert main(["ingest", "CS240", str(other), "--category", "notes"]) == 0
+    return tmp_path
+
+
+def test_search_file_restricts_results_to_one_document(two_doc_course, capsys):
+    assert main(["search", "CS240", "amortized analysis", "--file", "other.txt"]) == 0
+
+    out = capsys.readouterr().out
+    assert "other.txt" in out
+    assert "slides.pdf" not in out
+
+
+def test_search_file_rejects_an_unknown_document_and_lists_the_real_ones(
+    two_doc_course, capsys
+):
+    assert main(["search", "CS240", "anything", "--file", "ghost.pdf"]) == 1
+
+    err = capsys.readouterr().err
+    assert "No document 'ghost.pdf'" in err
+    assert "slides.pdf" in err
+
+
+def test_show_prints_a_document_in_page_order(two_doc_course, capsys):
+    assert main(["show", "CS240", "slides.pdf"]) == 0
+
+    out = capsys.readouterr().out
+    assert "3 passage(s)" in out
+    assert out.index("Balanced Search Trees") < out.index("AVL Rotations")
+    assert "other.txt" not in out
+
+
+def test_show_honours_a_page_range(two_doc_course, capsys):
+    assert main(["show", "CS240", "slides.pdf", "--pages", "2-3"]) == 0
+
+    out = capsys.readouterr().out
+    assert "AVL Rotations" in out
+    assert "Balanced Search Trees" not in out
+
+
+def test_show_rejects_an_unreadable_range(two_doc_course, capsys):
+    assert main(["show", "CS240", "slides.pdf", "--pages", "banana"]) == 1
+    assert "Could not read" in capsys.readouterr().err
+
+
+def test_show_on_an_unknown_course_fails(tmp_path, monkeypatch, dummy_config, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["show", "NOPE", "x.pdf"]) == 1
+    assert "No course 'NOPE'" in capsys.readouterr().err

@@ -103,7 +103,7 @@ def rerank(reranker: "Reranker", query: str, candidates: list[SearchResult]) -> 
 
 def retrieve(
     cfg: "Config", store: "CourseStore", embedder: "Embedder", query: str, k: int, *,
-    use_rerank: bool = False, candidates: int | None = None,
+    use_rerank: bool = False, candidates: int | None = None, source_file: str | None = None,
 ) -> tuple[list[SearchResult], list[SearchResult]]:
     """Run the retrieval pipeline; return ``(final, dense_only)``.
 
@@ -114,13 +114,18 @@ def retrieve(
     reranker could not fill the requested page), the cross-encoder rescores those, and
     the top ``k`` come back. The dense-only ordering is returned alongside because
     every caller that reranks also wants the A/B, and stage one already computed it.
+
+    ``source_file`` scopes both stages to one document. It has to reach the *candidate*
+    search rather than the final slice: filtering after reranking would rescore
+    course-wide candidates and then throw most of them away, returning fewer than ``k``
+    results from a stage that had them available.
     """
     vector = embed_query(embedder, query)
     if not use_rerank:
-        dense = store.search(vector, k=k)
+        dense = store.search(vector, k=k, source_file=source_file)
         return dense, dense
 
     depth = max(candidates or cfg.rerank_candidates, k)
-    dense = store.search(vector, k=depth)
+    dense = store.search(vector, k=depth, source_file=source_file)
     reranker = get_reranker(cfg.reranker, cfg)
     return rerank(reranker, query, dense)[:k], dense[:k]

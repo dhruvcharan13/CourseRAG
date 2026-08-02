@@ -159,3 +159,53 @@ assert len(vectors[0]) == 64
         )
         == []
     )
+
+
+def test_kb_show_never_loads_a_model(tmp_path):
+    """Reading a document back compares no vectors, so it must cost no model at all.
+
+    This is the whole reason ``cmd_show`` opens the store directly instead of going
+    through ``_open_for_search``: that helper constructs an embedder to run the
+    dims-match guard, which would pull in torch for a path that never embeds anything.
+    """
+    assert (
+        _heavy_modules_after(
+            """
+import pathlib, tempfile, os
+from course_kb.cli import main
+os.chdir(tempfile.mkdtemp())
+pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
+pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
+assert main(["init-course", "C"]) == 0
+assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
+assert main(["show", "C", "notes.txt"]) == 0
+"""
+        )
+        == []
+    )
+
+
+def test_read_document_never_loads_a_model():
+    """Same guarantee through the MCP tool.
+
+    ``mcp`` itself is expected here — importing the server is the point — so this asserts
+    on the *model* stack specifically rather than the whole heavy list.
+    """
+    leaked = _heavy_modules_after(
+        """
+import pathlib, tempfile, os
+from course_kb.cli import main
+root = tempfile.mkdtemp()
+os.chdir(root)
+pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
+pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
+assert main(["init-course", "C"]) == 0
+assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
+os.environ["COURSE_KB_ROOT"] = str(pathlib.Path(root) / "course-kb")
+from course_kb.mcp_server import read_document
+out = read_document("C", "notes.txt")
+assert "coin flips" in out, out
+"""
+    )
+
+    assert [m for m in leaked if m in ("torch", "sentence_transformers", "transformers")] == []

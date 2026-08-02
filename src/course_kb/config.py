@@ -49,6 +49,13 @@ class Config:
     # recover a low-ranked answer; it is also a hard ceiling on what reranking can fix.
     rerank_candidates: int = 20
 
+    # Character budget for a whole-document read (``read_document`` / ``kb show``) when
+    # no explicit page range is asked for. Documents in a slide-deck corpus run 7k-35k
+    # chars, so this returns most of them entire and paginates only the long tail. It is
+    # a *soft* cap: going over truncates visibly and names the range to ask for next,
+    # never silently.
+    max_document_chars: int = 20000
+
     chunk_size: int = 1000
     # Currently unread: the chunker derives prose overlap from its own OVERLAP_RATIO
     # (~12% of chunk_size) rather than an absolute char count. Kept for config stability.

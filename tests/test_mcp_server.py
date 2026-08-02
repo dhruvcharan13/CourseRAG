@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -395,3 +396,117 @@ def test_search_refuses_a_course_built_by_a_different_model(tools, kb_root):
 
     assert "dummy-hash-64" in out and "dummy-hash-32" in out
     assert "not comparable" in out
+
+
+# --------------------------------------------------------------------------- #
+# read_document / document-scoped search
+# --------------------------------------------------------------------------- #
+
+
+def test_read_document_returns_the_whole_file_in_page_order(tools):
+    out = tools.read_document("CS240", "slides.pdf")
+
+    assert "3 of 3 passage(s), pages 1-3 of 3" in out
+    assert out.index("Balanced Search Trees") < out.index("AVL Rotations") < out.index(
+        "Amortized Analysis"
+    )
+    # A straight read is not a ranking, so it must not display one.
+    assert "relevance" not in out
+
+
+def test_read_document_honours_an_explicit_page_range(tools):
+    out = tools.read_document("CS240", "slides.pdf", pages="2")
+
+    assert "AVL Rotations" in out
+    assert "Balanced Search Trees" not in out
+
+
+def test_read_document_accepts_an_open_ended_range(tools):
+    out = tools.read_document("CS240", "slides.pdf", pages="2-")
+
+    assert "AVL Rotations" in out and "Amortized Analysis" in out
+    assert "Balanced Search Trees" not in out
+
+
+def test_read_document_matches_a_filename_case_insensitively(tools):
+    """Names get retyped out of a citation; capitalization should not be a dead end."""
+    assert "Balanced Search Trees" in tools.read_document("CS240", "SLIDES.PDF")
+
+
+def test_read_document_on_an_unknown_file_names_the_real_ones(tools):
+    out = tools.read_document("CS240", "nope.pdf")
+
+    assert "No document named 'nope.pdf'" in out
+    assert "slides.pdf" in out
+
+
+def test_read_document_rejects_an_unreadable_page_range(tools):
+    out = tools.read_document("CS240", "slides.pdf", pages="banana")
+
+    assert "Could not read 'banana' as a page range" in out
+
+
+def test_read_document_reports_an_empty_range_against_the_real_length(tools):
+    out = tools.read_document("CS240", "slides.pdf", pages="90-")
+
+    assert "No passages in slides.pdf within pages '90-'" in out
+    assert "page 3" in out
+
+
+def test_an_oversize_document_truncates_visibly_and_says_how_to_continue(tools, kb_root):
+    """Truncation must never be silent, and the marker has to name a usable next call."""
+    (kb_root / "config.toml").write_text(
+        'embedder = "dummy"\nreranker = "dummy"\nmax_document_chars = 150\n', encoding="utf-8"
+    )
+
+    out = tools.read_document("CS240", "slides.pdf")
+
+    assert "[truncated at the 150-character budget" in out
+    assert 'pages="2-"' in out
+    # Cut on a page boundary: page 2 is absent entirely rather than half-shown.
+    assert "Balanced Search Trees" in out
+    assert "AVL Rotations" not in out
+
+
+def test_following_the_truncation_markers_walks_the_whole_document(tools, kb_root):
+    """Each call hands back the range for the next, and the chain terminates.
+
+    With a budget this small every call truncates, so this also pins that following the
+    marker makes progress rather than looping on the same page forever.
+    """
+    (kb_root / "config.toml").write_text(
+        'embedder = "dummy"\nreranker = "dummy"\nmax_document_chars = 150\n', encoding="utf-8"
+    )
+
+    seen, pages, guard = [], "", 0
+    while guard < 5:
+        guard += 1
+        out = tools.read_document("CS240", "slides.pdf", pages=pages)
+        seen += re.findall(r"^\[p(\d+)\]", out, re.M)
+        marker = re.search(r'pages="(\d+-)"', out)
+        if not marker:
+            break
+        pages = marker.group(1)
+
+    assert seen == ["1", "2", "3"], "pages must arrive once each, in order"
+
+
+def test_search_can_be_scoped_to_one_document(tools):
+    out = tools.search_course("CS240", "rotations", source_file="slides.pdf")
+
+    assert "in slides.pdf" in out
+    assert "slides.pdf" in out
+
+
+def test_search_scoped_to_an_unknown_document_names_the_real_ones(tools):
+    out = tools.search_course("CS240", "rotations", source_file="ghost.pdf")
+
+    assert "No document named 'ghost.pdf'" in out
+    assert "slides.pdf" in out
+
+
+def test_unscoped_search_output_is_unchanged(tools):
+    """The acceptance-tested default path must not shift because a parameter was added."""
+    assert tools.search_course("CS240", "rotations") == tools.search_course(
+        "CS240", "rotations", source_file=""
+    )

@@ -162,13 +162,22 @@ class CourseStore:
             self._table.optimize(cleanup_older_than=timedelta(0))
         return removed
 
-    def search(self, query_vector: list[float], k: int = 5) -> list["SearchResult"]:
+    def search(
+        self, query_vector: list[float], k: int = 5, *, source_file: str | None = None
+    ) -> list["SearchResult"]:
         """Top-``k`` chunks by cosine similarity to ``query_vector``, best first.
 
         Vectors are unit-normalized at embed time, so cosine similarity equals the dot
         product; either way the ranking is the same. No ANN index is ever built on these
         tables, so this is an exact brute-force scan — correct at any corpus size, and
         fast enough while courses are thousands of chunks rather than millions.
+
+        ``source_file`` restricts the search to one document. It is applied as a
+        *pre*-filter, which is the whole point: the default post-filters, taking the
+        course-wide top-k first and only then dropping non-matching rows, so a scoped
+        search of a document whose chunks all rank below the course top-k would come
+        back empty while looking like an honest "nothing relevant here". Pre-filtering
+        ranks within the document instead, so ``k`` means what it says.
 
         LanceDB returns a *distance*; the similarity callers want is ``1 - distance``.
         That conversion is pinned by a test on hand-computed vectors rather than trusted,
@@ -194,15 +203,36 @@ class CourseStore:
         # but warns that it will stop doing so.
         columns = [f.name for f in self._table.schema if f.name != "vector"]
         columns.append("_distance")
-        rows = (
-            self._table.search(query_vector)
-            .metric("cosine")
-            .select(columns)
-            .limit(k)
-            .to_arrow()
-            .to_pylist()
-        )
+        builder = self._table.search(query_vector).metric("cosine")
+        if source_file is not None:
+            # Typed expression rather than an SQL string, so a filename containing a
+            # quote is matched instead of malforming the predicate — same reason
+            # delete_source builds its filter this way.
+            builder = builder.where(col("source_file") == lit(source_file), prefilter=True)
+        rows = builder.select(columns).limit(k).to_arrow().to_pylist()
         return [
             SearchResult(chunk=ChunkRecord.from_dict(row), score=1.0 - float(row["_distance"]))
             for row in rows
         ]
+
+    def read_source(self, source_file: str) -> list[ChunkRecord]:
+        """Every chunk from one document, in reading order.
+
+        Not a search: no query, no ranking, no model. Ordering is ``(page, char_start)``
+        — the chunker emits several chunks per page, so page alone is not a total order
+        and sorting by it would scramble them within a page.
+
+        Returns an empty list for a file the course does not have; callers that want to
+        distinguish "no such file" from "empty file" check :meth:`source_files` first.
+        """
+        columns = [f.name for f in self._table.schema if f.name != "vector"]
+        rows = (
+            self._table.search()
+            .where(col("source_file") == lit(source_file))
+            .select(columns)
+            .limit(0)
+            .to_arrow()
+            .to_pylist()
+        )
+        rows.sort(key=lambda r: (r["page"] if r["page"] is not None else 0, r["char_start"] or 0))
+        return [ChunkRecord.from_dict(row) for row in rows]

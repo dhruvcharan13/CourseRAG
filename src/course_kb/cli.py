@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 import time
@@ -409,6 +410,72 @@ def _open_for_search(cfg: Config, course_id: str) -> tuple[CourseStore, Embedder
     return CourseStore.open_or_create(course_dir, manifest.dims), embedder
 
 
+def _match_source(store: CourseStore, source_file: str) -> str | None:
+    """Resolve a document name against the store, or explain what exists on stderr.
+
+    Case-insensitive fallback for the same reason the MCP server has one: names get
+    retyped from a citation. Returns ``None`` when the caller should exit non-zero.
+    """
+    known = store.source_files()
+    if source_file in known:
+        return source_file
+    folded = [name for name in known if name.lower() == source_file.lower()]
+    if len(folded) == 1:
+        return folded[0]
+    if len(folded) > 1:
+        print(f"'{source_file}' matches {', '.join(folded)}. Name one exactly.", file=sys.stderr)
+        return None
+    print(f"No document '{source_file}' in this course. Documents:", file=sys.stderr)
+    for name in known:
+        print(f"  {name}", file=sys.stderr)
+    return None
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    """Print one document's stored text in page order — a read, not a search.
+
+    Loads no embedding model: reading text back compares no vectors, so this works on a
+    course whose embedder is unavailable, and costs nothing to start up.
+    """
+    cfg = load_config()
+    course_dir = cfg.courses_dir / args.course_id
+    if not manifest_path(course_dir).exists():
+        print(f"No course '{args.course_id}'. Run: kb list", file=sys.stderr)
+        return 1
+
+    manifest = read_manifest(course_dir)
+    store = CourseStore.open_or_create(course_dir, manifest.dims)
+    name = _match_source(store, args.file)
+    if name is None:
+        return 1
+
+    records = store.read_source(name)
+    if args.pages:
+        bounds = re.fullmatch(r"(\d+)\s*(?:-\s*(\d+)?)?", args.pages.strip())
+        if not bounds:
+            print(f"Could not read '{args.pages}' as a page range.", file=sys.stderr)
+            return 1
+        first = int(bounds.group(1))
+        last = int(bounds.group(2)) if bounds.group(2) else (None if "-" in args.pages else first)
+        records = [
+            r for r in records
+            if r.page is not None and r.page >= first and (last is None or r.page <= last)
+        ]
+
+    if not records:
+        print(f"No passages in {name} for that range.", file=sys.stderr)
+        return 1
+
+    print(f"{name} — {args.course_id} ({len(records)} passage(s))\n")
+    for record in records:
+        page = f"p{record.page}" if record.page is not None else "p?"
+        head = f"[{page}] {record.title}" if record.title else f"[{page}]"
+        print(head)
+        print(record.text)
+        print()
+    return 0
+
+
 def _snippet(text: str, width: int = 160) -> str:
     """One-line preview of a chunk: collapsed whitespace, truncated."""
     flat = " ".join(text.split())
@@ -446,9 +513,16 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(f"Course '{args.course_id}' has no chunks yet. Run: kb ingest ...", file=sys.stderr)
         return 1
 
+    scope = None
+    if args.file:
+        scope = _match_source(store, args.file)
+        if scope is None:
+            return 1
+
     results, _ = retrieve(
         cfg, store, embedder, args.query, args.k,
         use_rerank=args.rerank, candidates=args.candidates or cfg.rerank_candidates,
+        source_file=scope,
     )
 
     if args.json:
@@ -770,8 +844,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("query", help="What to search for, in natural language.")
     p_search.add_argument("-k", type=int, default=5, help="How many results to return (default: 5).")
     p_search.add_argument("--json", action="store_true", help="Emit JSON on stdout for piping.")
+    p_search.add_argument(
+        "--file", help="Restrict the search to one source document (as shown by kb info)."
+    )
     _add_rerank_flags(p_search)
     p_search.set_defaults(func=cmd_search)
+
+    p_show = sub.add_parser("show", help="Print one document's stored text in page order.")
+    p_show.add_argument("course_id")
+    p_show.add_argument("file", help="Source document, as shown by kb info.")
+    p_show.add_argument("--pages", help='Page range: "12", "1-20", or "25-".')
+    p_show.set_defaults(func=cmd_show)
 
     p_eval = sub.add_parser("eval", help="Score search against a labelled eval set.")
     p_eval.add_argument("course_id")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from course_kb.config import ROOT_ENV_VAR
+from courserag.config import ROOT_ENV_VAR
 
 
 @pytest.fixture(autouse=True)

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.parsing import ParsedDocument, get_parser_for
-from course_kb.parsing.text import TextParser
+from courserag.parsing import ParsedDocument, get_parser_for
+from courserag.parsing.text import TextParser
 
 
 @pytest.mark.parametrize("name", ["notes.txt", "readme.md", "UPPER.TXT"])

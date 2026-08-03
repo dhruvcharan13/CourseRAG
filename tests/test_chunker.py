@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from course_kb.chunker import (
+from courserag.chunker import (
     chunk_document,
     estimate_tokens,
     is_slide_deck,
     keep_elements,
     nonspace_len,
 )
-from course_kb.config import Config
-from course_kb.parsing import ParsedDocument, ParsedElement
+from courserag.config import Config
+from courserag.parsing import ParsedDocument, ParsedElement
 
 _KW = dict(course="C", source_file="f.pdf", category="notes", added_at="2026-01-01T00:00:00+00:00")
 

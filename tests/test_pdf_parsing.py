@@ -7,9 +7,9 @@ from pathlib import Path
 
 import fitz
 
-from course_kb.chunker import nonspace_len
-from course_kb.parsing import ParsedDocument, get_parser_for
-from course_kb.parsing.pdf import _FOLD, _PAGE_NUMBER, PdfParser, _is_two_column
+from courserag.chunker import nonspace_len
+from courserag.parsing import ParsedDocument, get_parser_for
+from courserag.parsing.pdf import _FOLD, _PAGE_NUMBER, PdfParser, _is_two_column
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

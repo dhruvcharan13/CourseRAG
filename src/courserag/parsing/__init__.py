@@ -4,7 +4,7 @@ A :class:`Parser` turns a file into a :class:`ParsedDocument` (a list of
 :class:`ParsedElement`). Parsers register the extensions they handle;
 :func:`get_parser_for` resolves the right one for a path.
 
-Phase 0 ships one reference parser (:class:`~course_kb.parsing.text.TextParser`
+Phase 0 ships one reference parser (:class:`~courserag.parsing.text.TextParser`
 for ``.txt`` / ``.md``) purely to prove the wiring. Real PDF/PPTX/DOCX parsers
 arrive in Phase 1 and register themselves the same way.
 """
@@ -81,8 +81,8 @@ def get_parser_for(path: Path) -> Parser:
 # Register the built-in reference parser on import so the registry is usable
 # out of the box. Imported here (bottom of module) to avoid a circular import,
 # since text.py imports the names defined above.
-from course_kb.parsing.pdf import PdfParser  # noqa: E402
-from course_kb.parsing.text import TextParser  # noqa: E402
+from courserag.parsing.pdf import PdfParser  # noqa: E402
+from courserag.parsing.text import TextParser  # noqa: E402
 
 register_parser(TextParser())
 register_parser(PdfParser())

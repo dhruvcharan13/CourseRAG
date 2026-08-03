@@ -16,11 +16,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from course_kb import __version__
-from course_kb.chunker import chunk_document, estimate_tokens, is_slide_deck, keep_elements
-from course_kb.config import Config, load_config
-from course_kb.embedding import Embedder, get_embedder
-from course_kb.evaluation import (
+from courserag import __version__
+from courserag.chunker import chunk_document, estimate_tokens, is_slide_deck, keep_elements
+from courserag.config import Config, load_config
+from courserag.embedding import Embedder, get_embedder
+from courserag.evaluation import (
     EVAL_DIR,
     EVAL_K,
     QueryOutcome,
@@ -29,12 +29,12 @@ from course_kb.evaluation import (
     score_run,
     score_spread,
 )
-from course_kb.manifest import Manifest, manifest_path, read_manifest, write_manifest
-from course_kb.parsing import ParsedDocument, get_parser_for
-from course_kb.records import ChunkRecord
-from course_kb.reranking import get_reranker
-from course_kb.retrieval import SearchResult, retrieve
-from course_kb.store import CourseStore
+from courserag.manifest import Manifest, manifest_path, read_manifest, write_manifest
+from courserag.parsing import ParsedDocument, get_parser_for
+from courserag.records import ChunkRecord
+from courserag.reranking import get_reranker
+from courserag.retrieval import SearchResult, retrieve
+from courserag.store import CourseStore
 
 
 def _now_iso() -> str:

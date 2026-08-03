@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "course-kb"
+name = "courserag"
 version = "0.0.1"
 description = "Per-course RAG knowledge base — isolated LanceDB store per course behind one interface."
 readme = "README.md"
@@ -15,17 +15,17 @@ dev = ["pytest"]
 # Real local embeddings. Kept optional (and lazily imported) so the core install
 # stays lean and the DummyEmbedder path needs nothing beyond the stdlib.
 local = ["sentence-transformers>=3.0"]
-# Expose the knowledge base to an agent over MCP (`python -m course_kb.mcp_server`).
+# Expose the knowledge base to an agent over MCP (`python -m courserag.mcp_server`).
 # Optional, and a heavier tree than the core: the SDK pulls starlette, uvicorn and
 # httpx for transports this server never uses. Nothing in the package imports
 # `mcp_server`, so `mcp` can never reach the CLI or the retrieval path.
 mcp = ["mcp>=2.0"]
 
 [project.scripts]
-kb = "course_kb.cli:main"
+kb = "courserag.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/course_kb"]
+packages = ["src/courserag"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

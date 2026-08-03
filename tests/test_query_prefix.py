@@ -12,15 +12,15 @@ import json
 
 import pytest
 
-from course_kb.cli import main
-from course_kb.embedding.dummy import DummyEmbedder
-from course_kb.embedding.sentence_transformer import (
+from courserag.cli import main
+from courserag.embedding.dummy import DummyEmbedder
+from courserag.embedding.sentence_transformer import (
     DEFAULT_MODEL_ID,
     MINILM_MODEL_ID,
     SentenceTransformerEmbedder,
     is_available,
 )
-from course_kb.retrieval import embed_query
+from courserag.retrieval import embed_query
 
 BGE_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -80,7 +80,7 @@ def test_ingest_uses_the_passage_path_and_search_uses_the_query_path(
     """The asymmetry holds end to end through the CLI, offline, with no model loaded."""
     monkeypatch.chdir(tmp_path)
     recorder = _RecordingEmbedder()
-    monkeypatch.setattr("course_kb.cli.get_embedder", lambda name, cfg: recorder)
+    monkeypatch.setattr("courserag.cli.get_embedder", lambda name, cfg: recorder)
 
     (tmp_path / "notes.txt").write_text("Skip lists use coin flips to pick tower height.\n")
     assert main(["init-course", "C"]) == 0

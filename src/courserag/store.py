@@ -6,7 +6,7 @@ materializes as ``<course_dir>/index.lance/`` — matching the on-disk layout.
 
 :meth:`CourseStore.search` is the retrieval entry point: an exact cosine top-k over
 the course's vectors. Embedding the query is the caller's job (see
-:mod:`course_kb.retrieval`), so the store never needs to know which model built it.
+:mod:`courserag.retrieval`), so the store never needs to know which model built it.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import lancedb
 import pyarrow as pa
 from lancedb.expr import col, lit
 
-from course_kb.records import ChunkRecord
-from course_kb.retrieval import SearchResult
+from courserag.records import ChunkRecord
+from courserag.retrieval import SearchResult
 
 TABLE_NAME = "index"
 

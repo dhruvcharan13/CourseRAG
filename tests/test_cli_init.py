@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from course_kb.cli import main
+from courserag.cli import main
 
 
 def test_init_course_creates_expected_paths(tmp_path, monkeypatch, dummy_config):
@@ -67,7 +67,7 @@ def test_unavailable_embedder_creates_nothing(tmp_path, monkeypatch, capsys):
     def _unavailable(name, cfg):
         raise ImportError('sentence-transformers is not installed. pip install -e ".[local]"')
 
-    monkeypatch.setattr("course_kb.cli.get_embedder", _unavailable)
+    monkeypatch.setattr("courserag.cli.get_embedder", _unavailable)
 
     assert main(["init-course", "CS240-W26"]) == 1
     assert "error:" in capsys.readouterr().err

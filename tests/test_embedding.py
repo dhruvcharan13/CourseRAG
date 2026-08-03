@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from course_kb.config import Config
-from course_kb.embedding import Embedder, get_embedder, resolve_embedder_name
-from course_kb.embedding import sentence_transformer as st
-from course_kb.embedding.dummy import DummyEmbedder
+from courserag.config import Config
+from courserag.embedding import Embedder, get_embedder, resolve_embedder_name
+from courserag.embedding import sentence_transformer as st
+from courserag.embedding.dummy import DummyEmbedder
 
 
 def test_default_dims_and_model_id():

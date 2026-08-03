@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.cli import main
-from course_kb.manifest import read_manifest
-from course_kb.store import CourseStore
+from courserag.cli import main
+from courserag.manifest import read_manifest
+from courserag.store import CourseStore
 
 
 class _FakeEmbedder:
@@ -82,7 +82,7 @@ def test_ingest_refuses_a_different_embedder_and_writes_nothing(
     capsys.readouterr()
 
     monkeypatch.setattr(
-        "course_kb.cli.get_embedder", lambda name, cfg: _FakeEmbedder(model_id, dims)
+        "courserag.cli.get_embedder", lambda name, cfg: _FakeEmbedder(model_id, dims)
     )
     other = tmp_path / "other.txt"
     other.write_text("A red-black tree is a balanced binary search tree.\n", encoding="utf-8")

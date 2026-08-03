@@ -1,9 +1,9 @@
 """Embedding contract and factory.
 
 An :class:`Embedder` maps texts to fixed-dimension vectors. Two implementations
-exist: the real local :class:`~course_kb.embedding.sentence_transformer.SentenceTransformerEmbedder`
+exist: the real local :class:`~courserag.embedding.sentence_transformer.SentenceTransformerEmbedder`
 (the ``[local]`` extra, defaulting to bge-small-en-v1.5) and the dependency-free,
-deterministic :class:`~course_kb.embedding.dummy.DummyEmbedder`. Either way there is
+deterministic :class:`~courserag.embedding.dummy.DummyEmbedder`. Either way there is
 no API key and no network after the model is cached.
 
 The default name is ``"auto"``: the real model when sentence-transformers is
@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from course_kb.config import Config
+    from courserag.config import Config
 
 __all__ = ["Embedder", "get_embedder", "resolve_embedder_name"]
 
@@ -44,7 +44,7 @@ def resolve_embedder_name(name: str) -> str:
     if name != "auto":
         return name
 
-    from course_kb.embedding.sentence_transformer import is_available
+    from courserag.embedding.sentence_transformer import is_available
 
     return "local" if is_available() else "dummy"
 
@@ -70,11 +70,11 @@ def get_embedder(name: str, cfg: Config) -> Embedder:
     resolved = resolve_embedder_name(name)
 
     if resolved == "dummy":
-        from course_kb.embedding.dummy import DummyEmbedder
+        from courserag.embedding.dummy import DummyEmbedder
 
         return DummyEmbedder()
 
-    from course_kb.embedding.sentence_transformer import (
+    from courserag.embedding.sentence_transformer import (
         DEFAULT_MODEL_ID,
         MINILM_MODEL_ID,
         SentenceTransformerEmbedder,

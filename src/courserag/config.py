@@ -1,4 +1,4 @@
-"""Configuration for course-kb.
+"""Configuration for CourseRAG.
 
 A ``Config`` dataclass with sane defaults, optionally overridden by a
 ``config.toml`` loaded with the stdlib ``tomllib``. Works with no config file and

@@ -52,7 +52,7 @@ def kb_root(tmp_path, monkeypatch):
     Returns the data root, deliberately *not* the cwd of any test that uses it: the
     whole point of ``COURSE_KB_ROOT`` is that those two can differ.
     """
-    from course_kb.cli import main
+    from courserag.cli import main
 
     workdir = tmp_path / "build-here"
     workdir.mkdir()
@@ -79,7 +79,7 @@ def tools(kb_root, monkeypatch):
     )
     monkeypatch.chdir(kb_root)
     monkeypatch.setenv("COURSE_KB_ROOT", str(kb_root))
-    import course_kb.mcp_server as srv
+    import courserag.mcp_server as srv
 
     return srv
 
@@ -93,7 +93,7 @@ def tools(kb_root, monkeypatch):
 # same body can be run once writing its payload and once writing nothing at all.
 _PROBE = """
 import json, sys
-from course_kb.mcp_server import list_courses, search_course
+from courserag.mcp_server import list_courses, search_course
 payload = {{
     "courses": list_courses(),
     "search": search_course("CS240", "rotations", k=1),
@@ -199,7 +199,7 @@ def test_the_tools_write_nothing_to_stdout(kb_root, tmp_path):
 # the embedder and the cross-encoder get exercised in one probe.
 _REAL_PROBE = """
 import json, sys
-from course_kb.mcp_server import list_courses, search_course
+from courserag.mcp_server import list_courses, search_course
 payload = {{
     "courses": list_courses(),
     "search": search_course("CS240", "how does a rotation work?", k=2, rerank=True),
@@ -217,7 +217,7 @@ def real_kb_root(tmp_path, monkeypatch):
     loads, so a real-path stdout test pointed at it would load nothing and assert
     nothing — passing for the wrong reason.
     """
-    from course_kb.cli import main
+    from courserag.cli import main
 
     workdir = tmp_path / "build-real"
     workdir.mkdir()
@@ -322,8 +322,8 @@ def test_course_info_on_an_unknown_course_names_the_real_ones(tools):
 
 def test_search_returns_passages_with_a_citation_and_the_text(tools, kb_root):
     """Dummy vectors are seeded by text, so a chunk's own text retrieves itself."""
-    from course_kb.manifest import read_manifest
-    from course_kb.store import CourseStore
+    from courserag.manifest import read_manifest
+    from courserag.store import CourseStore
 
     course_dir = kb_root / "courses" / "CS240"
     chunks = sorted(CourseStore.open_or_create(course_dir, read_manifest(course_dir).dims)
@@ -372,7 +372,7 @@ def test_search_warns_when_the_course_is_placeholder_embedded(tools):
 
 
 def test_search_on_an_empty_course_explains_rather_than_returning_nothing(tools, kb_root):
-    from course_kb.cli import main
+    from courserag.cli import main
 
     assert main(["init-course", "EMPTY"]) == 0
     out = tools.search_course("EMPTY", "anything")
@@ -384,8 +384,8 @@ def test_search_refuses_a_course_built_by_a_different_model(tools, kb_root):
     (kb_root / "config.toml").write_text(
         'embedder = "dummy-32"\nreranker = "dummy"\n', encoding="utf-8"
     )
-    import course_kb.embedding as embedding
-    from course_kb.embedding.dummy import DummyEmbedder
+    import courserag.embedding as embedding
+    from courserag.embedding.dummy import DummyEmbedder
 
     original = embedding.get_embedder
     tools.get_embedder = lambda name, cfg: DummyEmbedder(dims=32)

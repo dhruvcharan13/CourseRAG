@@ -183,7 +183,7 @@ class SentenceTransformerEmbedder:
                         f"Model '{self.model_id}' produces {actual}-dim vectors, but this "
                         f"build expected {self.dims}. Course tables are sized from the "
                         f"expected width, so refusing to embed. Fix _KNOWN_DIMS in "
-                        f"course_kb/embedding/sentence_transformer.py."
+                        f"courserag/embedding/sentence_transformer.py."
                     )
             _MODEL_CACHE[cache_key] = model
 

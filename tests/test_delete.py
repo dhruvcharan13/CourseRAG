@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.cli import main
-from course_kb.manifest import read_manifest
-from course_kb.store import CourseStore
+from courserag.cli import main
+from courserag.manifest import read_manifest
+from courserag.store import CourseStore
 
 pytestmark = pytest.mark.usefixtures("dummy_config")
 
@@ -126,7 +126,7 @@ def test_delete_needs_no_embedder(tmp_path, monkeypatch):
     def _unavailable(name, cfg):
         raise ImportError("sentence-transformers is not installed")
 
-    monkeypatch.setattr("course_kb.cli.get_embedder", _unavailable)
+    monkeypatch.setattr("courserag.cli.get_embedder", _unavailable)
 
     assert main(["delete", "C", "notes.txt"]) == 0
     assert _store(tmp_path).source_files() == ["slides.txt"]
@@ -139,7 +139,7 @@ def test_delete_reclaims_disk_instead_of_growing_it(tmp_path):
     merged files land beside a pre-delete version that is retained for 7 days by
     default. This guards against that regression.
     """
-    from course_kb.records import ChunkRecord
+    from courserag.records import ChunkRecord
 
     course_dir = tmp_path / "sized"
     store = CourseStore.open_or_create(course_dir, 64)
@@ -183,7 +183,7 @@ def test_delete_clears_a_stale_manifest_entry(tmp_path, monkeypatch, capsys):
     course_dir = _two_file_course(tmp_path, monkeypatch)
     manifest = read_manifest(course_dir)
     manifest.files.append("ghost.txt")
-    from course_kb.manifest import write_manifest
+    from courserag.manifest import write_manifest
 
     write_manifest(course_dir, manifest)
     capsys.readouterr()

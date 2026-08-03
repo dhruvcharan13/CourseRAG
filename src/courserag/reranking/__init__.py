@@ -10,16 +10,16 @@ The trade is cost: no vectors can be precomputed, so every candidate needs its o
 forward pass. That is why this is a second stage over a small candidate set rather
 than a retriever.
 
-Same shape as :mod:`course_kb.embedding` — a minimal protocol, an optional heavy
+Same shape as :mod:`courserag.embedding` — a minimal protocol, an optional heavy
 implementation behind the ``[local]`` extra, and a dependency-free stand-in. Nothing
-here imports torch; see :mod:`course_kb.reranking.cross_encoder`.
+here imports torch; see :mod:`courserag.reranking.cross_encoder`.
 """
 
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from course_kb.config import Config
+from courserag.config import Config
 
 __all__ = ["Reranker", "get_reranker", "resolve_reranker_name"]
 
@@ -43,7 +43,7 @@ def resolve_reranker_name(name: str) -> str:
     """Resolve ``"auto"`` to a concrete reranker without importing one."""
     if name != "auto":
         return name
-    from course_kb.reranking.cross_encoder import is_available
+    from courserag.reranking.cross_encoder import is_available
 
     return "local" if is_available() else "dummy"
 
@@ -57,11 +57,11 @@ def get_reranker(name: str, cfg: Config) -> Reranker:
     resolved = resolve_reranker_name(name)
 
     if resolved == "dummy":
-        from course_kb.reranking.dummy import DummyReranker
+        from courserag.reranking.dummy import DummyReranker
 
         return DummyReranker()
 
-    from course_kb.reranking.cross_encoder import DEFAULT_MODEL_ID, CrossEncoderReranker
+    from courserag.reranking.cross_encoder import DEFAULT_MODEL_ID, CrossEncoderReranker
 
     aliases = {"local": DEFAULT_MODEL_ID, "cross-encoder": DEFAULT_MODEL_ID}
     if resolved in aliases:

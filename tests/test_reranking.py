@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from course_kb.config import Config
-from course_kb.records import ChunkRecord
-from course_kb.reranking import Reranker, get_reranker, resolve_reranker_name
-from course_kb.reranking.cross_encoder import DEFAULT_MODEL_ID, CrossEncoderReranker, is_available
-from course_kb.reranking.dummy import DummyReranker
-from course_kb.retrieval import SearchResult, rerank
+from courserag.config import Config
+from courserag.records import ChunkRecord
+from courserag.reranking import Reranker, get_reranker, resolve_reranker_name
+from courserag.reranking.cross_encoder import DEFAULT_MODEL_ID, CrossEncoderReranker, is_available
+from courserag.reranking.dummy import DummyReranker
+from courserag.retrieval import SearchResult, rerank
 
 
 def _result(rid: str, text: str, score: float) -> SearchResult:

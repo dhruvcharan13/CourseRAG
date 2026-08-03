@@ -23,7 +23,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from course_kb.parsing import ParsedDocument, ParsedElement
+from courserag.parsing import ParsedDocument, ParsedElement
 
 # A line is a title only if its font is at least this many points larger than the
 # document's body text. (Boldness alone is not enough: prose emphasises terms

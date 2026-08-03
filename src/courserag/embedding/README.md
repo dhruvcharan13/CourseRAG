@@ -1,4 +1,4 @@
-# `course_kb.embedding`
+# `courserag.embedding`
 
 Turns chunk text into fixed-width vectors. Everything else in the project treats this
 package as a black box behind one three-member protocol.

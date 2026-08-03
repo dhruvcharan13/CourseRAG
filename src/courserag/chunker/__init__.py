@@ -20,9 +20,9 @@ import re
 import statistics
 from dataclasses import dataclass
 
-from course_kb.config import Config
-from course_kb.parsing import ParsedDocument, ParsedElement
-from course_kb.records import ChunkRecord
+from courserag.config import Config
+from courserag.parsing import ParsedDocument, ParsedElement
+from courserag.records import ChunkRecord
 
 # A page whose median word count is at or below this is treated as a slide.
 SLIDE_WORDS_PER_PAGE = 100

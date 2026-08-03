@@ -5,7 +5,7 @@ all have to stay clear of it. Each check runs in a fresh subprocess and reports 
 heavy modules ended up in ``sys.modules``.
 
 ``mcp`` and its transport dependencies are on the same list. Nothing in the package
-imports :mod:`course_kb.mcp_server`, and that has to stay true — it is the only reason
+imports :mod:`courserag.mcp_server`, and that has to stay true — it is the only reason
 the ``[mcp]`` extra can pull starlette and uvicorn without the CLI paying for them.
 
 These are only meaningful when the ``[local]`` extra is installed — otherwise the
@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from course_kb.embedding.sentence_transformer import is_available
+from courserag.embedding.sentence_transformer import is_available
 
 pytestmark = pytest.mark.skipif(
     not is_available(), reason="vacuous without the [local] extra installed"
@@ -50,7 +50,7 @@ def test_help_does_not_import_the_model_stack():
     assert (
         _heavy_modules_after(
             """
-from course_kb.cli import main
+from courserag.cli import main
 try:
     main(["--help"])
 except SystemExit:
@@ -67,8 +67,8 @@ def test_constructing_the_local_embedder_does_not_import_the_model_stack():
     assert (
         _heavy_modules_after(
             """
-from course_kb.config import Config
-from course_kb.embedding import get_embedder
+from courserag.config import Config
+from courserag.embedding import get_embedder
 emb = get_embedder("local", Config())
 assert emb.dims == 384, emb.dims
 """
@@ -82,7 +82,7 @@ def test_search_help_does_not_import_the_model_stack():
     assert (
         _heavy_modules_after(
             """
-from course_kb.cli import main
+from courserag.cli import main
 try:
     main(["search", "--help"])
 except SystemExit:
@@ -98,8 +98,8 @@ def test_constructing_the_reranker_does_not_import_the_model_stack():
     assert (
         _heavy_modules_after(
             """
-from course_kb.config import Config
-from course_kb.reranking import get_reranker
+from courserag.config import Config
+from courserag.reranking import get_reranker
 r = get_reranker("local", Config())
 assert r.model_id.startswith("cross-encoder/"), r.model_id
 """
@@ -114,7 +114,7 @@ def test_dense_search_without_rerank_never_loads_the_cross_encoder():
         _heavy_modules_after(
             """
 import sys, tempfile, pathlib
-from course_kb.cli import main
+from courserag.cli import main
 tmp = tempfile.mkdtemp()
 import os; os.chdir(tmp)
 pathlib.Path("config.toml").write_text('embedder = "dummy"\\nreranker = "dummy"\\n')
@@ -134,7 +134,7 @@ def test_the_cli_never_imports_the_mcp_sdk():
         _heavy_modules_after(
             """
 import pathlib, tempfile, os
-from course_kb.cli import main
+from courserag.cli import main
 os.chdir(tempfile.mkdtemp())
 pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
 pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
@@ -151,8 +151,8 @@ def test_dummy_path_never_touches_the_model_stack():
     assert (
         _heavy_modules_after(
             """
-from course_kb.config import Config
-from course_kb.embedding import get_embedder
+from courserag.config import Config
+from courserag.embedding import get_embedder
 vectors = get_embedder("dummy", Config()).embed(["some text"])
 assert len(vectors[0]) == 64
 """
@@ -172,7 +172,7 @@ def test_kb_show_never_loads_a_model(tmp_path):
         _heavy_modules_after(
             """
 import pathlib, tempfile, os
-from course_kb.cli import main
+from courserag.cli import main
 os.chdir(tempfile.mkdtemp())
 pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
 pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
@@ -194,7 +194,7 @@ def test_read_document_never_loads_a_model():
     leaked = _heavy_modules_after(
         """
 import pathlib, tempfile, os
-from course_kb.cli import main
+from courserag.cli import main
 root = tempfile.mkdtemp()
 os.chdir(root)
 pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
@@ -202,7 +202,7 @@ pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower he
 assert main(["init-course", "C"]) == 0
 assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
 os.environ["COURSE_KB_ROOT"] = str(pathlib.Path(root) / "course-kb")
-from course_kb.mcp_server import read_document
+from courserag.mcp_server import read_document
 out = read_document("C", "notes.txt")
 assert "coin flips" in out, out
 """

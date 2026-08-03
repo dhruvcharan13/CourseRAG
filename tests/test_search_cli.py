@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.cli import main
-from course_kb.store import CourseStore
+from courserag.cli import main
+from courserag.store import CourseStore
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -98,8 +98,8 @@ def test_query_model_mismatch_is_refused_loudly(course, tmp_path, capsys):
     """
     (tmp_path / "config.toml").write_text('embedder = "dummy"\n', encoding="utf-8")
     # Same 'dummy' family, different width -> a different model_id, so a mismatch.
-    import course_kb.cli as cli
-    from course_kb.embedding.dummy import DummyEmbedder
+    import courserag.cli as cli
+    from courserag.embedding.dummy import DummyEmbedder
 
     original = cli.get_embedder
     cli.get_embedder = lambda name, cfg: DummyEmbedder(dims=32)
@@ -178,7 +178,7 @@ def test_rerank_without_the_local_extra_fails_with_a_hint(rerank_course, tmp_pat
     (tmp_path / "config.toml").write_text(
         'embedder = "dummy"\nreranker = "local"\n', encoding="utf-8"
     )
-    import course_kb.reranking.cross_encoder as ce
+    import courserag.reranking.cross_encoder as ce
 
     original = ce.is_available
     ce.is_available = lambda: False

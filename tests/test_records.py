@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from course_kb.records import ChunkRecord
+from courserag.records import ChunkRecord
 
 
 def _full_record() -> ChunkRecord:

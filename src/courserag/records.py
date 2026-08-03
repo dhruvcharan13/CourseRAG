@@ -1,7 +1,7 @@
 """The row schema shared by every phase: :class:`ChunkRecord`.
 
 One ``ChunkRecord`` is one stored chunk. ``to_dict`` / ``from_dict`` convert to
-and from the flat dict shape LanceDB stores (see :mod:`course_kb.store`), and are
+and from the flat dict shape LanceDB stores (see :mod:`courserag.store`), and are
 exact inverses so ``ChunkRecord.from_dict(r.to_dict()) == r``.
 """
 

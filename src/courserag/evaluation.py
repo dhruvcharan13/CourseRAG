@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 
-from course_kb.retrieval import SearchResult
+from courserag.retrieval import SearchResult
 
 # Depth every query is run to. Smaller k are prefixes of the same ranking, so one run
 # at this depth yields recall@1..@10 and MRR@10 without re-searching.

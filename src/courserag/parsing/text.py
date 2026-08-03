@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from course_kb.parsing import ParsedDocument, ParsedElement
+from courserag.parsing import ParsedDocument, ParsedElement
 
 
 class TextParser:

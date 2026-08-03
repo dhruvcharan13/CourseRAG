@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from course_kb.embedding.dummy import DummyEmbedder
-from course_kb.records import ChunkRecord
-from course_kb.retrieval import embed_query, retrieve
-from course_kb.store import CourseStore
+from courserag.embedding.dummy import DummyEmbedder
+from courserag.records import ChunkRecord
+from courserag.retrieval import embed_query, retrieve
+from courserag.store import CourseStore
 
 
 def _record(
@@ -210,8 +210,8 @@ def test_retrieve_threads_the_scope_through_the_rerank_candidate_pool(two_doc_st
     Filtering afterwards would rescore course-wide candidates and then discard most of
     them, returning fewer than k from a stage that had k available.
     """
-    from course_kb.config import Config
-    from course_kb.embedding.dummy import DummyEmbedder as _D
+    from courserag.config import Config
+    from courserag.embedding.dummy import DummyEmbedder as _D
 
     class _Q:
         dims, model_id = 3, "stub"

@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.cli import main
-from course_kb.embedding.sentence_transformer import (
+from courserag.cli import main
+from courserag.embedding.sentence_transformer import (
     DEFAULT_MODEL_ID,
     SentenceTransformerEmbedder,
     is_available,
 )
-from course_kb.manifest import read_manifest
-from course_kb.store import CourseStore
+from courserag.manifest import read_manifest
+from courserag.store import CourseStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -164,7 +164,7 @@ def test_count_tokens_matches_the_tokenizer(embedder):
 def test_char_estimate_undercounts_notation_dense_text(embedder):
     # The reason ingest counts real tokens instead of trusting chars/4: the character
     # estimate lands far below the true word-piece count on notation-dense text.
-    from course_kb.chunker import estimate_tokens
+    from courserag.chunker import estimate_tokens
 
     (real,) = embedder.count_tokens([MATH_HEAVY])
     assert estimate_tokens(MATH_HEAVY) < real / 1.5

@@ -2,7 +2,7 @@
 
 Stored vectors are unit-normalized, so cosine similarity is just their dot product
 and ranking by it is ranking by relevance. The actual top-k scan lives in
-:meth:`course_kb.store.CourseStore.search`; this module holds everything that is not
+:meth:`courserag.store.CourseStore.search`; this module holds everything that is not
 the store's business — how a *query* gets embedded, what a result looks like once it
 comes back, and how the optional rerank stage composes with the dense one.
 
@@ -20,14 +20,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from course_kb.records import ChunkRecord
-from course_kb.reranking import get_reranker
+from courserag.records import ChunkRecord
+from courserag.reranking import get_reranker
 
 if TYPE_CHECKING:
-    from course_kb.config import Config
-    from course_kb.embedding import Embedder
-    from course_kb.reranking import Reranker
-    from course_kb.store import CourseStore
+    from courserag.config import Config
+    from courserag.embedding import Embedder
+    from courserag.reranking import Reranker
+    from courserag.store import CourseStore
 
 
 def embed_query(embedder: "Embedder", query: str) -> list[float]:

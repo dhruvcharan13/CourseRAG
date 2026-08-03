@@ -7,9 +7,9 @@ import re
 import pytest
 from pathlib import Path
 
-from course_kb.cli import main
-from course_kb.manifest import read_manifest
-from course_kb.store import CourseStore
+from courserag.cli import main
+from courserag.manifest import read_manifest
+from courserag.store import CourseStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

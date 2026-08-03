@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from course_kb.embedding.sentence_transformer import is_available
+from courserag.embedding.sentence_transformer import is_available
 
 pytestmark = pytest.mark.skipif(
     not is_available(), reason='requires the [local] extra: pip install -e ".[local]"'
@@ -34,8 +34,8 @@ TEXTS = [
 
 _SCRIPT = """
 import hashlib, json, struct, sys
-from course_kb.config import Config
-from course_kb.embedding import get_embedder
+from courserag.config import Config
+from courserag.embedding import get_embedder
 
 texts = json.loads(sys.argv[1])
 batch_size = int(sys.argv[2])
@@ -79,8 +79,8 @@ def test_vectors_are_bit_identical_across_processes_and_thread_counts():
 
 
 def test_vectors_are_bit_identical_within_a_process():
-    from course_kb.config import Config
-    from course_kb.embedding import get_embedder
+    from courserag.config import Config
+    from courserag.embedding import get_embedder
 
     embedder = get_embedder("local", Config())
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from course_kb.config import ROOT_ENV_VAR, Config, load_config
+from courserag.config import ROOT_ENV_VAR, Config, load_config
 
 
 def test_defaults_with_no_file(tmp_path, monkeypatch):

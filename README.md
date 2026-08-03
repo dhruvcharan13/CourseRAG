@@ -1,4 +1,4 @@
-# course-kb
+# CourseRAG
 
 A per-course RAG knowledge base. Each course is an isolated
 [LanceDB](https://lancedb.github.io/lancedb/) store in its own folder, fronted by
@@ -11,8 +11,9 @@ interface, added in a later phase. (An Anthropic/Claude API key cannot produce
 embeddings — Claude is generation-only — so it is never the embedding default.)
 
 > Status: **working**. Parsing, chunking, per-course stores, real local embeddings
-> (384-dim bge), `kb search`/`kb eval`, an opt-in cross-encoder reranker, and an MCP
-> server all work. Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
+> (384-dim bge), `kb search`/`kb show`/`kb eval`, an opt-in cross-encoder reranker, and
+> a four-tool MCP server all work, the last acceptance-tested against four real courses.
+> Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
 > — see [The dense-only baseline](#the-dense-only-baseline). A D2L integration comes later.
 
 ## Install
@@ -38,8 +39,21 @@ kb info CS240-W26                        # manifest + chunk count
 kb list                                  # active and archived courses
 kb search CS240-W26 "how do skip lists pick tower height?"   # ranked, cited chunks
 kb search CS240-W26 "..." -k 10 --json   # same, as JSON on stdout for piping
+kb search CS240-W26 "..." --file module05.pdf   # search inside one document only
+kb show CS240-W26 module05.pdf            # read a document straight through
+kb show CS240-W26 module05.pdf --pages 20-31   # ...or one page range of it
 kb eval CS240-W26                        # score search against evals/CS240-W26.json
 ```
+
+`search` ranks by similarity across the whole course; `show` does not rank at all, it
+prints one document in page order. That distinction matters more than it looks: a
+question *about a document* ("explain module 5") is not a question the document happens
+to answer, and similarity search is the wrong tool for it. Measured on a 46-chunk
+module, a `-k 100` search recovered 46% of it at 21% precision, because other modules'
+cross-references to it outrank its own content. `show` returns all of it in one call.
+
+Like `delete`, `show` loads no embedding model: reading text back compares no vectors,
+so it also works on a course whose embedder is unavailable.
 
 `delete` takes the file name exactly as `kb info` lists it. It loads no embedding
 model — a vector is a pure function of chunk text, so removing rows costs no inference
@@ -190,14 +204,20 @@ permanent retrieval miss.
 ## MCP server
 
 Exposes the knowledge base to an agent, so you can ask about your own course materials
-and get answers cited back to a file and page. Three read-only tools —
-`list_courses`, `course_info`, and `search_course(course, query, k=5, rerank=False)`.
-Ingestion stays in the CLI: the agent can read the knowledge base, never rewrite it.
+and get answers cited back to a file and page. Four read-only tools — `list_courses`,
+`course_info`, `search_course(course, query, k=5, rerank=False, source_file="")`, and
+`read_document(course, source_file, pages="")`. Ingestion stays in the CLI: the agent
+can read the knowledge base, never rewrite it.
+
+`read_document` is the counterpart to `kb show`, and exists for the same reason: a
+top-k search cannot answer a question about a whole document. Long documents come back
+truncated at a *page boundary* with a marker naming the range to request next — never
+silently, and never splitting a page across two calls.
 
 ```bash
-claude mcp add course-kb \
+claude mcp add courserag \
   -e COURSE_KB_ROOT=/abs/path/to/repo/course-kb \
-  -- /abs/path/to/repo/.venv/bin/python -m course_kb.mcp_server
+  -- /abs/path/to/repo/.venv/bin/python -m courserag.mcp_server
 ```
 
 **`COURSE_KB_ROOT` is not optional.** A stdio server inherits the *client's* working

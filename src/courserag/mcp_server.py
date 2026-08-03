@@ -1,7 +1,7 @@
 """Expose the course knowledge base to an agent over MCP.
 
 Three read-only tools — list the courses, describe one, search one — as thin wrappers
-over :func:`course_kb.retrieval.retrieve` and the manifest. Retrieval behaviour is
+over :func:`courserag.retrieval.retrieve` and the manifest. Retrieval behaviour is
 identical to ``kb search``; this module owns presentation and error handling, nothing
 else. Ingestion stays in the CLI, so an agent can read the knowledge base but never
 rewrite it.
@@ -13,19 +13,19 @@ directory, and ``Config.root`` defaults to a relative ``course-kb``. Set
 ``COURSE_KB_ROOT`` when registering the server (see the module docstring's usage
 example below); without it the server resolves the root against whatever directory the
 editor happened to launch from, finds nothing, and reports an empty knowledge base as
-though that were true. :func:`course_kb.config.load_config` implements the precedence.
+though that were true. :func:`courserag.config.load_config` implements the precedence.
 
 **Nothing here may write to stdout.** Under the stdio transport, stdout *is* the
 JSON-RPC channel — a stray ``print`` corrupts the stream and surfaces as an
 unexplained client-side protocol error. That is why these tools wrap ``retrieval`` and
 the manifest directly rather than reusing the ``cmd_*`` functions in
-:mod:`course_kb.cli`, all of which print.
+:mod:`courserag.cli`, all of which print.
 
 Register with::
 
-    claude mcp add course-kb \\
+    claude mcp add courserag \\
       -e COURSE_KB_ROOT=/abs/path/to/course-kb \\
-      -- /abs/path/to/.venv/bin/python -m course_kb.mcp_server
+      -- /abs/path/to/.venv/bin/python -m courserag.mcp_server
 """
 
 from __future__ import annotations
@@ -43,15 +43,15 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from mcp.server import MCPServer  # noqa: E402
 
-from course_kb.config import Config, load_config  # noqa: E402
-from course_kb.embedding import Embedder, get_embedder  # noqa: E402
-from course_kb.manifest import Manifest, manifest_path, read_manifest  # noqa: E402
-from course_kb.records import ChunkRecord  # noqa: E402
-from course_kb.retrieval import SearchResult, retrieve  # noqa: E402
-from course_kb.store import CourseStore  # noqa: E402
+from courserag.config import Config, load_config  # noqa: E402
+from courserag.embedding import Embedder, get_embedder  # noqa: E402
+from courserag.manifest import Manifest, manifest_path, read_manifest  # noqa: E402
+from courserag.records import ChunkRecord  # noqa: E402
+from courserag.retrieval import SearchResult, retrieve  # noqa: E402
+from courserag.store import CourseStore  # noqa: E402
 
 server = MCPServer(
-    name="course-kb",
+    name="courserag",
     instructions=(
         "A local, per-course knowledge base over the user's own course materials "
         "(lecture slides, assignments, readings, syllabi). Use search_course to answer "
@@ -438,7 +438,7 @@ def read_document(course: str, source_file: str, pages: str = "") -> str:
 
 
 def main() -> None:
-    """Run the server on stdio. Entry point for ``python -m course_kb.mcp_server``."""
+    """Run the server on stdio. Entry point for ``python -m courserag.mcp_server``."""
     server.run()
 
 

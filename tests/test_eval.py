@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from course_kb.evaluation import (
+from courserag.evaluation import (
     EvalQuery,
     QueryOutcome,
     first_hit_rank,
@@ -15,8 +15,8 @@ from course_kb.evaluation import (
     score_run,
     score_spread,
 )
-from course_kb.records import ChunkRecord
-from course_kb.retrieval import SearchResult
+from courserag.records import ChunkRecord
+from courserag.retrieval import SearchResult
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

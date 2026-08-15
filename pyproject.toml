@@ -20,12 +20,21 @@ local = ["sentence-transformers>=3.0"]
 # httpx for transports this server never uses. Nothing in the package imports
 # `mcp_server`, so `mcp` can never reach the CLI or the retrieval path.
 mcp = ["mcp>=2.0"]
+# The local file-management UI (`kb web`). Optional for the same reason as `mcp`:
+# nothing in the package imports `courserag.web` at module scope, so fastapi and
+# uvicorn stay off `kb --help` and off every retrieval path. A test asserts it.
+web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 
 [project.scripts]
 kb = "courserag.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/courserag"]
+
+# The UI is one hand-written page with no build step, so it ships as package data
+# rather than through a bundler.
+[tool.hatch.build.targets.wheel.force-include]
+"src/courserag/web/static" = "courserag/web/static"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

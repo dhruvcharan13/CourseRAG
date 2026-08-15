@@ -12,6 +12,7 @@ import json
 import re
 import statistics
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,12 +30,30 @@ from courserag.evaluation import (
     score_run,
     score_spread,
 )
+from courserag.ingest import (
+    CourseNotInitialized,
+    EmbedderMismatch,
+    NoChunksProduced,
+    delete_file,
+    ingest_file,
+    resolve_embedder,
+)
 from courserag.manifest import Manifest, manifest_path, read_manifest, write_manifest
 from courserag.parsing import ParsedDocument, get_parser_for
 from courserag.records import ChunkRecord
 from courserag.reranking import get_reranker
 from courserag.retrieval import SearchResult, retrieve
 from courserag.store import CourseStore
+from courserag.sync import (
+    SyncPlan,
+    SyncRefused,
+    apply_sync,
+    forget_source,
+    import_paths,
+    plan_import,
+    plan_sync,
+    source_root,
+)
 
 
 def _now_iso() -> str:
@@ -114,94 +133,44 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 1
 
     # A course's embedding model is fixed at init-course: vectors from different
-    # models are not comparable, and a table's vector width cannot change. Check
-    # this before parsing, embedding, or opening the table, so a mismatched run
-    # changes nothing on disk.
-    manifest = read_manifest(course_dir)
-    embedder = get_embedder(cfg.embedder, cfg)
-    if (embedder.model_id, embedder.dims) != (manifest.embedding_model, manifest.dims):
+    # models are not comparable, and a table's vector width cannot change. Resolving
+    # the embedder checks that before anything is parsed, embedded, or opened for
+    # write, so a mismatched run changes nothing on disk.
+    try:
+        manifest, embedder = resolve_embedder(cfg, course_id)
+    except EmbedderMismatch as exc:
         _print_embedder_mismatch(
-            course_id, course_dir, manifest, embedder, "nothing was ingested"
+            course_id, course_dir, exc.manifest, exc.embedder, "nothing was ingested"
         )
         return 1
 
-    store = CourseStore.open_or_create(course_dir, manifest.dims)
-
-    parser = get_parser_for(path)
-    doc = parser.parse(path)
-
-    added_at = _now_iso()
-    records = chunk_document(
-        doc,
-        course=course_id,
-        source_file=path.name,
-        category=args.category,
-        cfg=cfg,
-        added_at=added_at,
-    )
-
-    # A file that yields nothing is not "already up to date" — say so, since the
-    # usual cause is an image-only scan that silently indexes as an empty document.
-    if not records:
-        kept = keep_elements(doc.elements, cfg)
-        dropped = len(doc.elements) - len(kept)
-        hint = (
-            "An image-only or scanned PDF needs OCR before it can be indexed."
-            if not kept
-            else "Text was parsed, but no chunk survived the chunker's minimum size."
+    try:
+        result = ingest_file(
+            cfg, course_id, path, args.category, manifest=manifest, embedder=embedder
         )
+    except NoChunksProduced as exc:
+        # A file that yields nothing is not "already up to date" — say so, since the
+        # usual cause is an image-only scan that silently indexes as an empty document.
         print(
-            f"error: no chunks produced from {path.name} — nothing was ingested.\n"
-            f"  {len(doc.elements)} page(s) parsed, {dropped} dropped as near-empty "
-            f"(< {cfg.min_element_chars} non-space chars).\n"
-            f"  {hint}",
+            f"error: no chunks produced from {exc.path.name} — nothing was ingested.\n"
+            f"  {exc.pages} page(s) parsed, {exc.dropped} dropped as near-empty "
+            f"(< {exc.min_element_chars} non-space chars).\n"
+            f"  {exc.hint}",
             file=sys.stderr,
         )
         return 1
 
-    # Skip chunks already stored for THIS file (by content hash) so re-ingest is
-    # a no-op, while identical slides shared across files are kept per file.
-    #
-    # The seen-set carries forward through this batch, not just the stored snapshot:
-    # a deck with two identical pages ("Intentionally blank.", a bare "UML Diagram"
-    # caption) yields two identical chunks in ONE run, and checking only what was
-    # already stored would let both through. Re-ingest hid it — the second run found
-    # them stored and reported no-op — so the index looked deduped while holding
-    # duplicate vectors that compete for the same top-k slots.
-    seen = store.existing_hashes(path.name)
-    new_records = []
-    for record in records:
-        if record.content_hash in seen:
-            continue
-        seen.add(record.content_hash)
-        new_records.append(record)
-    if not new_records:
+    if result.already_up_to_date:
         print(
-            f"No new chunks from {path.name}; already up to date in "
-            f"'{course_id}' (total: {store.count()})"
+            f"No new chunks from {result.source_file}; already up to date in "
+            f"'{course_id}' (total: {result.total_chunks})"
         )
         return 0
 
-    # Warn (non-fatal) about chunks the embedder will truncate.
-    _warn_oversize(embedder, new_records, cfg)
-
-    # Embed (one vector per chunk), then store.
-    vectors = embedder.embed([r.text for r in new_records])
-    for record, vector in zip(new_records, vectors):
-        record.vector = vector
-    store.add(new_records)
-
-    # Update the manifest (read before the embedder check above).
-    if args.category not in manifest.categories:
-        manifest.categories.append(args.category)
-    if path.name not in manifest.files:
-        manifest.files.append(path.name)
-    manifest.last_indexed = added_at
-    write_manifest(course_dir, manifest)
-
+    _warn_oversize(embedder, result.oversize, cfg)
     print(
-        f"Ingested {len(new_records)} chunk(s) from {path.name} into "
-        f"'{course_id}' (total: {store.count()})"
+        f"Ingested {result.chunks_added} chunk(s) from {result.source_file} into "
+        f"'{course_id}' (total: {result.total_chunks})"
     )
     return 0
 
@@ -210,7 +179,9 @@ def _shown_ids(records: list[ChunkRecord], limit: int = 5) -> str:
     return ", ".join(r.id for r in records[:limit]) + (" ..." if len(records) > limit else "")
 
 
-def _warn_oversize(embedder: Embedder, records: list[ChunkRecord], cfg: Config) -> None:
+def _warn_oversize(
+    embedder: Embedder, oversize: list[tuple[ChunkRecord, int | None]], cfg: Config
+) -> None:
     """Warn about chunks whose tails the embedder will drop.
 
     An embedder that can tokenize (the real local model) gives an exact count, and the
@@ -218,34 +189,32 @@ def _warn_oversize(embedder: Embedder, records: list[ChunkRecord], cfg: Config) 
     its head, so its tail is unsearchable even though the stored text and citations
     cover the whole chunk.
 
-    Without a tokenizer, fall back to ``estimate_tokens`` (~4 chars/token). Measured over
-    6.7k real chunks that proxy misses ~94% of actual truncations, because notation-dense
-    text (math, SQL, code) can run past 1 token per character — so it is reported as the
-    estimate it is. See docs/chunking-robustness.md.
+    Without a tokenizer, :func:`~courserag.ingest.find_oversize` falls back to
+    ``estimate_tokens`` (~4 chars/token) and reports ``None`` for the count. Measured
+    over 6.7k real chunks that proxy misses ~94% of actual truncations, because
+    notation-dense text (math, SQL, code) can run past 1 token per character — so it is
+    reported as the estimate it is. See docs/chunking-robustness.md.
     """
-    count_tokens = getattr(embedder, "count_tokens", None)
-    if count_tokens is None:
-        oversize = [r for r in records if estimate_tokens(r.text) > cfg.warn_chunk_tokens]
-        if oversize:
-            print(
-                f"warning: {len(oversize)} chunk(s) exceed ~{cfg.warn_chunk_tokens} tokens by "
-                f"character estimate and may be truncated by a token-limited embedder "
-                f"(estimate only; under-counts math/code): {_shown_ids(oversize)}",
-                file=sys.stderr,
-            )
+    if not oversize:
+        return
+    records = [r for r, _ in oversize]
+    counts = [n for _, n in oversize if n is not None]
+
+    if not counts:
+        print(
+            f"warning: {len(records)} chunk(s) exceed ~{cfg.warn_chunk_tokens} tokens by "
+            f"character estimate and may be truncated by a token-limited embedder "
+            f"(estimate only; under-counts math/code): {_shown_ids(records)}",
+            file=sys.stderr,
+        )
         return
 
     limit = embedder.max_input_tokens
-    counts = count_tokens([r.text for r in records])
-    oversize = [(r, n) for r, n in zip(records, counts) if n > limit]
-    if not oversize:
-        return
-    worst = max(n for _, n in oversize)
     print(
-        f"warning: {len(oversize)} of {len(records)} chunk(s) exceed the model's "
-        f"{limit}-token limit (largest: {worst} tokens). Only their first ~{limit} tokens "
-        f"are embedded, so the tail of each is not searchable; the full text is still "
-        f"stored and cited: {_shown_ids([r for r, _ in oversize])}",
+        f"warning: {len(records)} chunk(s) exceed the model's "
+        f"{limit}-token limit (largest: {max(counts)} tokens). Only their first ~{limit} "
+        f"tokens are embedded, so the tail of each is not searchable; the full text is "
+        f"still stored and cited: {_shown_ids(records)}",
         file=sys.stderr,
     )
 
@@ -288,18 +257,15 @@ def cmd_delete(args: argparse.Namespace) -> int:
     """
     cfg = load_config()
     course_id = args.course_id
-    course_dir = _course_dir(cfg, course_id)
 
-    if not manifest_path(course_dir).exists():
+    if not manifest_path(_course_dir(cfg, course_id)).exists():
         print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
         return 1
 
-    manifest = read_manifest(course_dir)
-    store = CourseStore.open_or_create(course_dir, manifest.dims)
-
-    removed = store.delete_source(args.file)
-    if removed == 0 and args.file not in manifest.files:
-        known = ", ".join(manifest.files) or "(none)"
+    try:
+        result = delete_file(cfg, course_id, args.file)
+    except KeyError:
+        known = ", ".join(read_manifest(_course_dir(cfg, course_id)).files) or "(none)"
         print(
             f"error: no chunks from '{args.file}' in course '{course_id}'. "
             f"Names must match exactly.\nFiles in this course: {known}",
@@ -307,26 +273,155 @@ def cmd_delete(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # The manifest's file and category lists are derived from the rows, so recompute
-    # rather than patch: a category may have been used only by the deleted file.
-    # Filtering (instead of rebuilding) preserves the existing ingest order.
-    remaining_categories = set(store.categories())
-    manifest.files = [f for f in manifest.files if f != args.file]
-    manifest.categories = [c for c in manifest.categories if c in remaining_categories]
-    # last_indexed records when content was last *indexed*; a deletion does not index.
-    write_manifest(course_dir, manifest)
+    # A file removed from the index is also removed from the folder that defines it,
+    # or the next sync would put it straight back.
+    forget_source(cfg, course_id, args.file)
 
-    if removed == 0:
+    if result.manifest_only:
         print(
             f"No stored chunks from {args.file}; removed its stale manifest entry "
-            f"in '{course_id}' (total: {store.count()})"
+            f"in '{course_id}' (total: {result.total_chunks})"
         )
         return 0
 
     print(
-        f"Deleted {removed} chunk(s) from {args.file} in '{course_id}' "
-        f"(remaining: {store.count()})"
+        f"Deleted {result.chunks_removed} chunk(s) from {args.file} in '{course_id}' "
+        f"(remaining: {result.total_chunks})"
     )
+    return 0
+
+
+def _plural(n: int, word: str) -> str:
+    return word if n == 1 else f"{word}s"
+
+
+def _print_plan_warnings(plan: SyncPlan) -> None:
+    """Report what the scan found but will not index. Neither case is fatal."""
+    for path in plan.unsupported:
+        print(f"  skipped (no parser): {path.name}", file=sys.stderr)
+    for name, rels in sorted(plan.duplicates.items()):
+        print(
+            f"  skipped (duplicate name): {name} appears at {', '.join(rels)}. "
+            f"Chunks are keyed by file name, so these cannot both be indexed — "
+            f"rename one.",
+            file=sys.stderr,
+        )
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Make a course's index match the files in its ``raw/`` folder."""
+    cfg = load_config()
+    course_id = args.course_id
+
+    if not manifest_path(_course_dir(cfg, course_id)).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return 1
+
+    root = source_root(cfg, course_id)
+    if args.source:
+        paths = [Path(p) for p in args.source]
+        missing = [p for p in paths if not Path(p).expanduser().exists()]
+        if missing:
+            print(f"error: no such path: {missing[0]}", file=sys.stderr)
+            return 1
+        if args.dry_run:
+            # --dry-run writes nothing, and copying into raw/ is a write. Saying what
+            # would be copied is the honest half; the plan below is necessarily
+            # computed against raw/ as it stands, so it will not list those files yet.
+            planned = plan_import(cfg, course_id, paths, category=args.category)
+            for name in planned.copied:
+                print(f"  would copy into raw/: {name}")
+            if planned.skipped:
+                print(f"  already in raw/: {len(planned.skipped)} file(s)")
+            for name in planned.unsupported:
+                print(f"  would skip (no parser): {name}", file=sys.stderr)
+        else:
+            imported = import_paths(cfg, course_id, paths, category=args.category)
+            for name in imported.copied:
+                print(f"  copied into raw/: {name}")
+            if imported.skipped:
+                print(f"  already in raw/: {len(imported.skipped)} file(s)")
+            for name in imported.unsupported:
+                print(f"  skipped (no parser): {name}", file=sys.stderr)
+
+    if not args.dry_run:
+        root.mkdir(parents=True, exist_ok=True)
+    plan = plan_sync(cfg, course_id)
+    _print_plan_warnings(plan)
+
+    if args.dry_run:
+        print(f"Plan for '{course_id}' ({root}):")
+        for src in plan.add:
+            print(f"  + {src.rel}  [{src.category}]")
+        for src in plan.reindex:
+            print(f"  ~ {src.rel}  [{src.category}]  (changed on disk)")
+        for name in plan.remove:
+            print(f"  - {name}  (gone from disk)")
+        print(f"  = {len(plan.unchanged)} unchanged")
+        if plan.is_empty:
+            print("Nothing to do.")
+        return 0
+
+    try:
+        report = apply_sync(cfg, course_id, plan, force=args.force)
+    except SyncRefused as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for result in report.added:
+        state = (
+            "already indexed"
+            if result.already_up_to_date
+            else f"{result.chunks_added} {_plural(result.chunks_added, 'chunk')}"
+        )
+        print(f"  + {result.source_file}  [{result.category}]  {state}")
+    for result in report.reindexed:
+        n = result.chunks_added
+        print(f"  ~ {result.source_file}  [{result.category}]  reindexed, {n} {_plural(n, 'chunk')}")
+    for result in report.removed:
+        n = result.chunks_removed
+        print(f"  - {result.source_file}  {n} {_plural(n, 'chunk')} removed")
+    for name, message in report.failed:
+        print(f"  ! {name}: {message}", file=sys.stderr)
+
+    files = len(report.unchanged) + len(report.added) + len(report.reindexed)
+    verb = "is up to date" if not report.changed else "now holds"
+    print(
+        f"'{course_id}' {verb}: {report.total_chunks} "
+        f"{_plural(report.total_chunks, 'chunk')} across {files} {_plural(files, 'file')}."
+    )
+    return 1 if report.failed else 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the local UI for putting files into courses and taking them out.
+
+    The import is inside the function, not at module scope, for the same reason
+    ``mcp_server`` is never imported by the package: it is the only thing keeping the
+    ``[web]`` extra's fastapi/uvicorn tree off ``kb --help``.
+    """
+    try:
+        from courserag.web import serve
+    except ImportError as exc:
+        print(
+            f"error: the web UI needs the [web] extra — {exc}\n"
+            f'  pip install -e ".[web]"',
+            file=sys.stderr,
+        )
+        return 1
+
+    cfg = load_config()
+    url = f"http://{args.host}:{args.port}"
+    print(f"CourseRAG UI on {url}  (data root: {cfg.root})")
+    print("Drop files to index them; delete to remove them. Ctrl-C to stop.")
+    if args.open:
+        import webbrowser
+
+        threading.Timer(0.7, lambda: webbrowser.open(url)).start()
+    try:
+        serve(host=args.host, port=args.port, cfg=cfg)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -382,21 +477,21 @@ def cmd_info(args: argparse.Namespace) -> int:
 def _open_for_search(cfg: Config, course_id: str) -> tuple[CourseStore, Embedder] | None:
     """Resolve a course for querying, or explain why it cannot be queried and return None.
 
-    The embedder check is the same invariant ingest enforces, applied at the other end:
-    a query embedded by a different model than the passages lands in a different vector
-    space, where the scores are not merely worse but meaningless. Refusing is the only
-    honest option — there is no partial answer to give.
+    The embedder check is the same invariant ingest enforces, applied at the other end —
+    literally the same code, :func:`~courserag.ingest.resolve_embedder`. A query embedded
+    by a different model than the passages lands in a different vector space, where the
+    scores are not merely worse but meaningless. Refusing is the only honest option —
+    there is no partial answer to give.
     """
     course_dir = _course_dir(cfg, course_id)
-    if not manifest_path(course_dir).exists():
+    try:
+        manifest, embedder = resolve_embedder(cfg, course_id)
+    except CourseNotInitialized:
         print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
         return None
-
-    manifest = read_manifest(course_dir)
-    embedder = get_embedder(cfg.embedder, cfg)
-    if (embedder.model_id, embedder.dims) != (manifest.embedding_model, manifest.dims):
+    except EmbedderMismatch as exc:
         _print_embedder_mismatch(
-            course_id, course_dir, manifest, embedder, "refusing to search"
+            course_id, course_dir, exc.manifest, exc.embedder, "refusing to search"
         )
         return None
 
@@ -831,6 +926,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_delete.add_argument("course_id")
     p_delete.add_argument("file", help="Source file name as stored (see kb info).")
     p_delete.set_defaults(func=cmd_delete)
+
+    p_sync = sub.add_parser(
+        "sync", help="Make a course's index match the files in its raw/ folder."
+    )
+    p_sync.add_argument("course_id")
+    p_sync.add_argument(
+        "--from",
+        dest="source",
+        nargs="+",
+        metavar="PATH",
+        help="Copy these files/folders into raw/ first. A folder becomes a category.",
+    )
+    p_sync.add_argument(
+        "--category",
+        help="Category for everything copied by --from (default: the folder's own name, "
+        "or the config's default_category for loose files).",
+    )
+    p_sync.add_argument(
+        "--dry-run", action="store_true", help="Print what would change; touch nothing."
+    )
+    p_sync.add_argument(
+        "--force",
+        action="store_true",
+        help="Sync even when raw/ is missing or empty (which would clear the index).",
+    )
+    p_sync.set_defaults(func=cmd_sync)
+
+    p_web = sub.add_parser("web", help="Serve a local UI for managing course files.")
+    p_web.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
+    p_web.add_argument("--port", type=int, default=8765, help="Port (default: 8765).")
+    p_web.add_argument(
+        "--open", action="store_true", help="Open the UI in a browser once it is up."
+    )
+    p_web.set_defaults(func=cmd_web)
 
     p_list = sub.add_parser("list", help="List active and archived courses.")
     p_list.set_defaults(func=cmd_list)

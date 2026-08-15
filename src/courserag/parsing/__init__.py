@@ -64,6 +64,16 @@ def register_parser(parser: Parser) -> None:
         _REGISTRY[ext.lower()] = parser
 
 
+def supported_extensions() -> frozenset[str]:
+    """Every extension the registry can parse, lowercased and dot-prefixed.
+
+    Lets a caller filter a directory *before* trying to parse it — ``kb sync`` walking
+    a folder full of a course's zips, images and stray notes should skip them quietly,
+    not raise once per file.
+    """
+    return frozenset(_REGISTRY)
+
+
 def get_parser_for(path: Path) -> Parser:
     """Return the parser for ``path``'s extension.
 

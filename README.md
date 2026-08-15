@@ -1,48 +1,52 @@
 # CourseRAG
 
-A per-course RAG knowledge base. Each course is an isolated
-[LanceDB](https://lancedb.github.io/lancedb/) store in its own folder, fronted by
-a single `kb` command-line interface.
+Ask questions about your own course materials. Each course is an isolated
+[LanceDB](https://lancedb.github.io/lancedb/) store in its own folder, fronted by a
+single `kb` command. Everything runs locally — no API key, no internet, no config file.
 
-**Design principle: zero-config, no API key, no internet required.** Embeddings
-run locally — a real sentence-transformers model, or a dependency-free dummy.
-Cloud providers (OpenAI/Voyage/Gemini) are opt-in alternates behind the same
-interface, added in a later phase. (An Anthropic/Claude API key cannot produce
-embeddings — Claude is generation-only — so it is never the embedding default.)
-
-> Status: **working**. Parsing, chunking, per-course stores, real local embeddings
-> (384-dim bge), `kb search`/`kb show`/`kb eval`, an opt-in cross-encoder reranker, and
-> a four-tool MCP server all work, the last acceptance-tested against four real courses.
-> Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
-> — see [The dense-only baseline](#the-dense-only-baseline). A D2L integration comes later.
-
-## Install
+## Quickstart
 
 ```bash
-pip install -e ".[dev,local]"   # real local embeddings (pulls torch, ~800MB on disk)
-pip install -e ".[dev]"         # lean install: dummy embeddings only
-pip install -e ".[local,mcp]"   # + expose the knowledge base to an agent over MCP
+pip install -e ".[local,web]"                    # local embeddings + the file-management UI
+
+kb init-course CS240                             # create the course
+kb sync CS240 --from ~/Downloads/cs240-slides    # copy the files in and index them
+kb search CS240 "how do skip lists pick tower height?"
 ```
 
-Runtime dependencies are `lancedb` (which bundles `pyarrow`) and `pymupdf`. The
-`local` extra adds `sentence-transformers` and the `mcp` extra adds the MCP SDK; both
-are imported lazily — and nothing in the package imports the server module — so the
-lean install and `kb --help` never pay for either. A test asserts it.
+That last command prints ranked passages with the file and page each came from:
 
-## Usage
+```
+1. [0.807] module05.pdf p30
+2. [0.788] module05.pdf p21
+3. [0.752] module05.pdf p32
+```
+
+Prefer to point and click? `kb web` opens a local page where you drag files — or whole
+folders — in and out of a course, with live chunk counts. See [`kb web`](#kb-web).
+
+## Commands
 
 ```bash
-kb init-course CS240-W26                 # create an isolated course store
-kb ingest CS240-W26 sample.txt --category notes   # parse -> chunk -> embed -> store
-kb delete CS240-W26 sample.txt           # remove every chunk from one source file
-kb info CS240-W26                        # manifest + chunk count
+kb init-course CS240                     # create an isolated course store
 kb list                                  # active and archived courses
-kb search CS240-W26 "how do skip lists pick tower height?"   # ranked, cited chunks
-kb search CS240-W26 "..." -k 10 --json   # same, as JSON on stdout for piping
-kb search CS240-W26 "..." --file module05.pdf   # search inside one document only
-kb show CS240-W26 module05.pdf            # read a document straight through
-kb show CS240-W26 module05.pdf --pages 20-31   # ...or one page range of it
-kb eval CS240-W26                        # score search against evals/CS240-W26.json
+kb info CS240                            # manifest + chunk count
+
+kb sync CS240                            # make the index match the course's raw/ folder
+kb sync CS240 --from ~/Downloads/slides  # copy files/folders in, then index them
+kb sync CS240 --dry-run                  # print the plan, write nothing
+kb web                                   # a local UI for dropping files in and out
+
+kb ingest CS240 sample.txt --category notes   # index one file from anywhere
+kb delete CS240 sample.txt               # remove every chunk from one source file
+
+kb search CS240 "how do skip lists pick tower height?"   # ranked, cited chunks
+kb search CS240 "..." -k 10 --json       # same, as JSON on stdout for piping
+kb search CS240 "..." --file module05.pdf     # search inside one document only
+kb show CS240 module05.pdf               # read a document straight through
+kb show CS240 module05.pdf --pages 20-31 # ...or one page range of it
+kb eval CS240                            # score search against evals/CS240.json
+kb chunks CS240 path/to/module05.pdf --report  # how a file chunks, without embedding or storing
 ```
 
 `search` ranks by similarity across the whole course; `show` does not rank at all, it
@@ -60,6 +64,103 @@ model — a vector is a pure function of chunk text, so removing rows costs no i
 — which also means a course can be pruned even when its embedding model is
 unavailable. It prunes old table versions to give the disk space back, so a delete
 cannot be rolled back; re-ingesting the source file restores it exactly.
+
+## Managing files: the folder is the source of truth
+
+Each course has always had a `raw/` folder, created by `init-course`. `kb sync` makes it
+mean something: **what is in `raw/` is what is in the index**, in both directions.
+
+```bash
+kb sync CS247                  # reconcile: add new, reindex changed, drop deleted
+kb sync CS247 --dry-run        # print the plan, write nothing
+kb sync CS247 --from ~/Downloads/lectures   # copy in first, then reconcile
+```
+
+That one rule is what makes a *visual* front-end possible without teaching it anything
+about chunks. Drag a PDF into `raw/` in Finder and sync ingests it; drag one to the
+trash and sync removes its chunks. Any file manager works — Finder, an Obsidian vault
+pointed at the folder, a synced Dropbox directory. `kb web` is just the one that also
+shows you chunk counts.
+
+**A subfolder names a category.** `raw/lecture/05.pdf` ingests as category `lecture`;
+a file loose at the top gets `default_category` (`notes`). Nothing else about the tree
+is interpreted, and moving a file between folders recategorizes it on the next sync.
+
+**Editing a file reindexes it, rather than appending to it.** This is the one thing a
+mirror needs that plain re-ingest cannot do: chunk dedup is by content hash, so
+re-ingesting an edited file adds its new chunks and leaves the stale ones behind, and
+searches go on citing text the document no longer contains. Sync detects the change
+against a digest in a per-course `sync.json` sidecar and does a delete-then-ingest.
+
+**Two guards, because "the folder is empty" is usually a lie.** Sync refuses to run when
+`raw/` is missing, and refuses when the plan would remove every indexed file while adding
+none — the signature of an unmounted drive or a half-synced cloud folder, not of someone
+clearing a course on purpose. `--force` overrides both. Deleting *some* files is not
+guarded; that is the mirror working as asked.
+
+**`kb delete` also removes the file from `raw/`.** It has to: dropping only the chunks
+would leave the file sitting there for the next sync to re-ingest, which reads as the
+delete having silently failed.
+
+**Adopting a course that predates sync** costs nothing. Point `--from` at wherever the
+files were originally ingested from; a file the index already knows is filed under the
+category the index recorded (not the source folder's name), and sync then sees it as
+unchanged instead of re-embedding it. Verified across four real courses — 64 files,
+1,453 chunks, zero re-embedding.
+
+### `kb web`
+
+```bash
+kb web              # http://127.0.0.1:8765
+kb web --open       # ...and open a browser at it
+```
+
+A one-page UI over the same functions the CLI calls: a course list with chunk counts,
+a drop zone that accepts files *or* whole folders (the folder becomes the category), a
+per-file table with chunk counts and a delete button, and a Sync button for when the
+folder changed outside the browser. Files dropped in Finder show as `not indexed` and
+files deleted there as `file missing` until you sync, rather than the page pretending
+the two agree.
+
+Indexing runs on a background worker and the page polls its log, because embedding a
+folder of slide decks takes long enough that an in-request wait would look hung. One
+worker, not a pool: two syncs of one course would race on the same LanceDB table.
+
+It binds to localhost and has no authentication — it reads and writes your own files on
+your own machine. The one thing it does harden is filenames: a directory upload sends
+`webkitRelativePath` verbatim, so `../../../.ssh/config` is a well-formed value for it,
+and every uploaded path is stripped of roots, `..` segments and dot-directories before
+it touches disk.
+
+## Install options
+
+```bash
+pip install -e ".[dev,local]"   # real local embeddings (pulls torch, ~800MB on disk)
+pip install -e ".[dev]"         # lean install: dummy embeddings only
+pip install -e ".[local,mcp]"   # + expose the knowledge base to an agent over MCP
+pip install -e ".[local,web]"   # + a local UI for managing course files
+```
+
+Runtime dependencies are `lancedb` (which bundles `pyarrow`) and `pymupdf`. The
+`local` extra adds `sentence-transformers`, `mcp` adds the MCP SDK, and `web` adds
+fastapi/uvicorn; all three are imported lazily — and nothing in the package imports the
+server or UI modules at module scope — so the lean install and `kb --help` never pay for
+any of them. A test asserts it.
+
+## Design and status
+
+**Zero-config, no API key, no internet required.** Embeddings run locally — a real
+sentence-transformers model, or a dependency-free dummy. Cloud providers
+(OpenAI/Voyage/Gemini) are opt-in alternates behind the same interface, added in a later
+phase. (An Anthropic/Claude API key cannot produce embeddings — Claude is
+generation-only — so it is never the embedding default.)
+
+> Status: **working**. Parsing, chunking, per-course stores, real local embeddings
+> (384-dim bge), `kb search`/`kb show`/`kb eval`, an opt-in cross-encoder reranker,
+> folder-mirroring ingest (`kb sync`) with a local UI (`kb web`), and
+> a four-tool MCP server all work, the last acceptance-tested against four real courses.
+> Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
+> — see [The dense-only baseline](#the-dense-only-baseline). A D2L integration comes later.
 
 ## Retrieval
 
@@ -195,11 +296,13 @@ model load. 2 of 1160 scored pairs exceeded the reranker's 512-token window (wor
 
 ### Reproducing the baseline
 
-The source PDFs live in `corpus/CS240/` and are gitignored — they are copyrighted course
-material. The eval set records the filenames and pages it labels, so the measurement is
-reproducible from the documents without shipping them. A test asserts every labelled page
-actually exists in its PDF, so a typo'd label fails loudly instead of masquerading as a
-permanent retrieval miss.
+The source PDFs live in the course's own `course-kb/courses/CS240/raw/` and are
+gitignored — they are copyrighted course material. The eval set records the filenames and
+pages it labels, so the measurement is reproducible from the documents without shipping
+them. A test asserts every labelled page actually exists in its PDF — validated against
+`raw/`, the same files the index was built from, so the labels cannot drift from the
+corpus they describe. A typo'd label fails loudly instead of masquerading as a permanent
+retrieval miss.
 
 ## MCP server
 
@@ -246,12 +349,19 @@ Warm searches are ~13ms. The first one pays the model load.
 course-kb/                     # default root, overridable via config.toml
   courses/<course_id>/
     index.lance/               # LanceDB dataset (one per course)
-    raw/                       # original source files
+    raw/                       # source files — the source of truth for `kb sync`
+      <category>/              # a subfolder names the category its files ingest as
     COURSE.md                  # per-course memory
     manifest.json              # {course, embedding_model, dims, categories, files, last_indexed}
+    sync.json                  # per-file digest/mtime, so sync can tell edits from no-ops
   models/                      # downloaded embedding models (cache_dir)
   archive/                     # retired courses (later phase)
 ```
+
+`sync.json` is bookkeeping about the folder, not metadata about the course, which is why
+it is a sidecar rather than more fields in `manifest.json` — `manifest.json` has a
+documented shape that other tools read. Deleting it costs one re-hash of each file, not
+a re-index: sync falls back to treating tracked-but-unrecorded files as unchanged.
 
 ## Embeddings
 
@@ -335,6 +445,7 @@ root = "course-kb"
 embedder = "auto"        # auto | dummy | minilm | <hf-org>/<hf-model>
 embed_batch_size = 32
 # cache_dir = "~/.cache/course-kb"   # model cache; defaults to <root>/models
+default_category = "notes"   # category for a file loose at the top of raw/
 chunk_size = 1000
 chunk_overlap = 200
 min_chunk_chars = 50

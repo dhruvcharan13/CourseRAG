@@ -56,6 +56,11 @@ class Config:
     # never silently.
     max_document_chars: int = 20000
 
+    # Category given to a file sitting loose at the top of a course's ``raw/`` folder.
+    # A file inside a subfolder takes that subfolder's name instead, which is the only
+    # meaning ``kb sync`` reads out of the directory tree.
+    default_category: str = "notes"
+
     chunk_size: int = 1000
     # Currently unread: the chunker derives prose overlap from its own OVERLAP_RATIO
     # (~12% of chunk_size) rather than an absolute char count. Kept for config stability.

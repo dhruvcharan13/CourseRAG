@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CourseRAG</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161920;
+    --panel-2: #1c2029;
+    --line: #272c38;
+    --text: #e6e8ee;
+    --muted: #8b93a7;
+    --accent: #6ea8fe;
+    --ok: #4ec9a5;
+    --warn: #e0a458;
+    --danger: #e06c75;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f6; --line: #dfe3ea;
+      --text: #1b1f28; --muted: #667085; --accent: #2f6fd0;
+      --ok: #12855f; --warn: #a4671b; --danger: #c0392b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .spacer { flex: 1; }
+  main { flex: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
+
+  /* ---- sidebar ---- */
+  aside {
+    border-right: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .aside-head {
+    padding: 12px 14px 8px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .courses { overflow-y: auto; flex: 1; padding: 0 8px 8px; }
+  .course {
+    display: flex; align-items: baseline; gap: 8px; width: 100%;
+    padding: 8px 10px; border: 0; border-radius: 8px; background: transparent;
+    color: var(--text); cursor: pointer; text-align: left; font: inherit;
+  }
+  .course:hover { background: var(--panel-2); }
+  .course[aria-current="true"] { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
+  .course .name { flex: 1; font-weight: 500; }
+  .course .count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .aside-foot { padding: 8px; border-top: 1px solid var(--line); }
+
+  /* ---- content ---- */
+  section { overflow-y: auto; padding: 18px 22px 40px; min-height: 0; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .course-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 4px; }
+  .course-head h2 { margin: 0; font-size: 20px; }
+  .meta { color: var(--muted); font-size: 12.5px; margin: 2px 0 16px; }
+  .meta code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  /* ---- drop zone ---- */
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: var(--radius);
+    padding: 26px; text-align: center; color: var(--muted);
+    background: var(--panel); transition: border-color .12s, background .12s;
+    cursor: pointer; margin-bottom: 18px;
+  }
+  .drop:hover { border-color: var(--accent); }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--text); }
+  .drop strong { color: var(--text); display: block; margin-bottom: 4px; font-weight: 600; }
+
+  /* ---- file table ---- */
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted); font-weight: 500; padding: 0 10px 6px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); width: 90px; }
+  td.act { width: 34px; text-align: right; }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11.5px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .pill { font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
+  .pill.pending { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .pill.missing { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+
+  button {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600; }
+  button.icon { padding: 3px 8px; background: transparent; border-color: transparent; color: var(--muted); }
+  button.icon:hover { color: var(--danger); border-color: var(--line); }
+
+  /* ---- job log ---- */
+  .job {
+    margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--panel); overflow: hidden;
+  }
+  .job-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+  .job-head .label { font-weight: 600; }
+  .bar { height: 3px; background: var(--panel-2); }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+  .job pre {
+    margin: 0; padding: 10px 14px; max-height: 190px; overflow-y: auto;
+    font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    border-top: 1px solid var(--line);
+  }
+  .notice {
+    padding: 9px 12px; border-radius: 8px; margin-bottom: 14px; font-size: 13px;
+    border: 1px solid; background: var(--panel);
+  }
+  .notice.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); color: var(--warn); }
+  .notice.err  { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); color: var(--danger); }
+  .spin {
+    width: 12px; height: 12px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>CourseRAG</h1>
+  <span class="spacer"></span>
+  <span id="globalNote" class="meta" style="margin:0"></span>
+</header>
+
+<main>
+  <aside>
+    <div class="aside-head">Courses</div>
+    <div class="courses" id="courseList"></div>
+    <div class="aside-foot"><button id="newCourse" style="width:100%">+ New course</button></div>
+  </aside>
+
+  <section id="detail"><div class="empty">Select a course, or create one.</div></section>
+</main>
+
+<input type="file" id="filePick" multiple hidden>
+
+<script>
+"use strict";
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const state = { courses: [], current: null, detail: null, poll: null, extensions: [] };
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const fmtSize = (n) => n == null ? "" :
+  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* non-JSON error body */ }
+    throw new Error(detail);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function note(msg, kind = "err") {
+  const el = $("#globalNote");
+  el.textContent = msg;
+  el.style.color = kind === "err" ? "var(--danger)" : "var(--muted)";
+  if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 6000);
+}
+
+// ---------------------------------------------------------------- sidebar --
+
+async function loadCourses() {
+  const data = await api("/api/courses");
+  state.courses = data.courses;
+  state.extensions = data.extensions;
+  const list = $("#courseList");
+  list.innerHTML = "";
+  if (!state.courses.length) {
+    list.innerHTML = '<div class="empty" style="padding:20px 0;font-size:13px">No courses yet.</div>';
+  }
+  for (const c of state.courses) {
+    const btn = document.createElement("button");
+    btn.className = "course";
+    btn.setAttribute("aria-current", String(c.id === state.current));
+    btn.innerHTML =
+      `<span class="name">${esc(c.id)}</span>` +
+      (c.busy ? '<span class="spin"></span>' : `<span class="count">${c.chunks.toLocaleString()}</span>`);
+    btn.onclick = () => select(c.id);
+    list.appendChild(btn);
+  }
+}
+
+async function select(id) {
+  state.current = id;
+  await loadCourses();
+  await refresh();
+}
+
+// ----------------------------------------------------------------- detail --
+
+async function refresh() {
+  if (!state.current) return;
+  try {
+    state.detail = await api(`/api/courses/${encodeURIComponent(state.current)}`);
+  } catch (e) {
+    note(e.message);
+    return;
+  }
+  render();
+  const job = state.detail.job;
+  if (job && !job.done) startPolling(job.id);
+}
+
+function render() {
+  const d = state.detail;
+  if (!d) return;
+  const onDisk = d.files.filter((f) => f.on_disk).length;
+  const pending = d.files.filter((f) => f.on_disk && !f.indexed).length;
+  const missing = d.files.filter((f) => !f.on_disk && f.indexed).length;
+
+  const rows = d.files.map((f) => {
+    let flag = "";
+    if (f.on_disk && !f.indexed) flag = '<span class="pill pending">not indexed</span>';
+    else if (!f.on_disk && f.indexed) flag = '<span class="pill missing">file missing</span>';
+    return `<tr>
+      <td>${esc(f.name)}${flag}</td>
+      <td>${f.category ? `<span class="tag">${esc(f.category)}</span>` : ""}</td>
+      <td class="num">${fmtSize(f.size)}</td>
+      <td class="num">${f.chunks ? f.chunks.toLocaleString() : "&mdash;"}</td>
+      <td class="act"><button class="icon" data-del="${esc(f.name)}" title="Remove from course">&#10005;</button></td>
+    </tr>`;
+  }).join("");
+
+  const notices = [];
+  for (const [name, rels] of Object.entries(d.duplicates || {})) {
+    notices.push(`<div class="notice err">Duplicate name <b>${esc(name)}</b> at ${esc(rels.join(", "))}
+      — chunks are keyed by file name, so neither is indexed. Rename one.</div>`);
+  }
+  if (d.unsupported?.length) {
+    notices.push(`<div class="notice warn">${d.unsupported.length} file(s) in the folder have no parser
+      and are ignored: ${esc(d.unsupported.slice(0, 6).join(", "))}${d.unsupported.length > 6 ? "…" : ""}</div>`);
+  }
+  if (pending || missing) {
+    const bits = [pending && `${pending} not indexed`, missing && `${missing} missing from disk`].filter(Boolean);
+    notices.push(`<div class="notice warn">${bits.join(", ")} — run Sync to reconcile.</div>`);
+  }
+
+  $("#detail").innerHTML = `
+    <div class="course-head">
+      <div style="flex:1">
+        <h2>${esc(d.id)}</h2>
+        <div class="meta">
+          ${d.chunks.toLocaleString()} chunks &middot; ${onDisk} file(s) in
+          <code>${esc(d.source_dir)}</code><br>
+          <code>${esc(d.embedding_model)}</code> &middot; ${d.dims}d
+          ${d.last_indexed ? "&middot; last indexed " + esc(d.last_indexed.slice(0, 16).replace("T", " ")) : ""}
+        </div>
+      </div>
+      <button id="syncBtn">Sync</button>
+    </div>
+    ${notices.join("")}
+    <div class="drop" id="drop">
+      <strong>Drop PDFs or a folder here</strong>
+      A folder becomes a category. Supported: ${state.extensions.join(", ")}
+    </div>
+    <div id="jobBox"></div>
+    ${d.files.length ? `<table>
+      <thead><tr><th>File</th><th>Category</th><th class="num">Size</th><th class="num">Chunks</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>` : '<div class="empty">Nothing in this course yet.</div>'}
+  `;
+
+  $("#syncBtn").onclick = doSync;
+  wireDropZone($("#drop"));
+  for (const btn of document.querySelectorAll("[data-del]")) {
+    btn.onclick = () => removeFile(btn.dataset.del);
+  }
+  if (state.detail.job) renderJob(state.detail.job);
+}
+
+// -------------------------------------------------------------- job polling --
+
+function renderJob(job) {
+  const box = $("#jobBox");
+  if (!box) return;
+  const pct = Math.round((job.progress ?? 0) * 100);
+  box.innerHTML = `<div class="job">
+    <div class="job-head">
+      ${job.done ? "" : '<span class="spin"></span>'}
+      <span class="label">${esc(job.label)}</span>
+      <span class="meta" style="margin:0">${job.state}</span>
+    </div>
+    <div class="bar"><div style="width:${pct}%"></div></div>
+    <pre>${esc(job.lines.join("\n")) || "…"}</pre>
+  </div>`;
+  const pre = box.querySelector("pre");
+  if (pre) pre.scrollTop = pre.scrollHeight;
+}
+
+function startPolling(jobId) {
+  clearInterval(state.poll);
+  state.poll = setInterval(async () => {
+    let job;
+    try {
+      job = await api(`/api/jobs/${jobId}`);
+    } catch (e) {
+      clearInterval(state.poll);
+      note(e.message);
+      return;
+    }
+    renderJob(job);
+    if (job.done) {
+      clearInterval(state.poll);
+      if (job.error) note(job.error);
+      await loadCourses();
+      const finished = state.detail;
+      await refresh();
+      // Keep the finished log on screen; refresh() clears it when the job is gone.
+      if (finished) renderJob(job);
+    }
+  }, 600);
+}
+
+// ------------------------------------------------------------------ actions --
+
+async function doSync() {
+  const btn = $("#syncBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const { job } = await api(`/api/courses/${encodeURIComponent(state.current)}/sync`, { method: "POST" });
+    renderJob(job);
+    startPolling(job.id);
+  } catch (e) {
+    note(e.message);
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function removeFile(name) {
+  if (!confirm(`Remove "${name}" from ${state.current}?\n\nIts chunks are deleted and the file is removed from the course folder.`)) return;
+  try {
+    await api(`/api/courses/${encodeURIComponent(state.current)}/files/${encodeURIComponent(name)}`,
+      { method: "DELETE" });
+    await loadCourses();
+    await refresh();
+  } catch (e) { note(e.message); }
+}
+
+async function upload(entries) {
+  if (!entries.length) return;
+  const form = new FormData();
+  for (const { file, path } of entries) {
+    form.append("files", file, file.name);
+    form.append("paths", path || file.name);
+  }
+  try {
+    const res = await api(`/api/courses/${encodeURIComponent(state.current)}/files`,
+      { method: "POST", body: form });
+    if (res.skipped?.length) note(`Skipped (no parser): ${res.skipped.join(", ")}`, "err");
+    if (res.job) { renderJob(res.job); startPolling(res.job.id); }
+    else await refresh();
+  } catch (e) { note(e.message); }
+}
+
+// ---- drag & drop, including whole folders (Chrome/Safari/Edge/Firefox) ----
+
+/** Walk a dropped directory tree, yielding files with their relative paths. */
+async function walkEntry(entry, prefix = "") {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    return [{ file, path: prefix + file.name }];
+  }
+  const reader = entry.createReader();
+  const children = [];
+  // readEntries returns at most ~100 at a time; keep reading until it returns none.
+  for (;;) {
+    const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+    if (!batch.length) break;
+    children.push(...batch);
+  }
+  const out = [];
+  for (const child of children) {
+    if (child.name.startsWith(".")) continue;
+    out.push(...await walkEntry(child, `${prefix}${entry.name}/`));
+  }
+  return out;
+}
+
+function wireDropZone(zone) {
+  if (!zone) return;
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  zone.addEventListener("dragover", (e) => { stop(e); zone.classList.add("over"); });
+  zone.addEventListener("dragleave", (e) => { stop(e); zone.classList.remove("over"); });
+  zone.addEventListener("drop", async (e) => {
+    stop(e);
+    zone.classList.remove("over");
+    const items = [...(e.dataTransfer.items || [])]
+      .map((i) => i.webkitGetAsEntry?.())
+      .filter(Boolean);
+    let entries = [];
+    if (items.length) {
+      for (const entry of items) entries.push(...await walkEntry(entry));
+    } else {
+      entries = [...e.dataTransfer.files].map((file) => ({ file, path: file.name }));
+    }
+    await upload(entries);
+  });
+  zone.addEventListener("click", () => {
+    const picker = $("#filePick");
+    picker.value = "";
+    picker.onchange = () => upload([...picker.files].map((file) => ({ file, path: file.name })));
+    picker.click();
+  });
+}
+
+// -------------------------------------------------------------------- init --
+
+$("#newCourse").onclick = async () => {
+  const id = prompt("Course id (e.g. CS247):");
+  if (!id) return;
+  const form = new FormData();
+  form.append("course_id", id.trim());
+  try {
+    const created = await api("/api/courses", { method: "POST", body: form });
+    await select(created.id);
+  } catch (e) { note(e.message); }
+};
+
+// Files changed outside the browser (Finder, a git pull) show up within a few seconds.
+setInterval(() => { if (state.current && !state.poll) refresh(); }, 5000);
+
+(async () => {
+  await loadCourses();
+  if (state.courses.length) await select(state.courses[0].id);
+})();
+</script>
+</body>
+</html>

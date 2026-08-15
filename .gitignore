@@ -1,13 +1,12 @@
 # Reference repo (cloned from the internet — not part of CourseRAG)
 /mcp-local-rag/
 
-# Runtime data root (default from config)
+# Runtime data root (default from config). Holds each course's index, its downloaded
+# models, and — under courses/<id>/raw/ — the source PDFs themselves, which are
+# copyrighted course material and are never committed. The eval sets (evals/) record
+# which files and pages they label, so the baseline stays reproducible without
+# shipping the documents.
 /course-kb/
-
-# Source PDFs for the eval corpus — copyrighted course material, never committed.
-# The eval set (evals/) records which files and pages it labels, so the baseline
-# stays reproducible without shipping the documents themselves.
-/corpus/
 
 # Python
 __pycache__/

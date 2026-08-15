@@ -1,10 +1,28 @@
 """Expose the course knowledge base to an agent over MCP.
 
-Three read-only tools — list the courses, describe one, search one — as thin wrappers
-over :func:`courserag.retrieval.retrieve` and the manifest. Retrieval behaviour is
-identical to ``kb search``; this module owns presentation and error handling, nothing
-else. Ingestion stays in the CLI, so an agent can read the knowledge base but never
-rewrite it.
+Seven tools — list the courses, describe one, search one, read a document straight
+through, look at one of its pages as an image, preview what is on each page, and record
+a lasting note about a course — as thin wrappers over
+:func:`courserag.retrieval.retrieve`, the manifest, :mod:`courserag.rendering` and
+:mod:`courserag.memory`. Retrieval behaviour is identical to ``kb search``; this module
+owns presentation and error handling, nothing else.
+
+**Six of the seven are read-only, and the seventh writes only notes.** ``remember``
+appends to a course's ``COURSE.md``; nothing here can ingest a document, delete a chunk,
+or touch the index. Ingestion stays in the CLI. That boundary is the point: an agent may
+accumulate what it learns *about* a course, and cannot alter the course itself. Appends
+rather than rewrites for the same reason — see :mod:`courserag.memory`.
+
+Every read of a course carries its notes at the top, because the things notes hold (the
+professor's notation, material that was skipped, how the user wants citations) change
+how the passages below should be read. Memory nobody sees until they think to look it up
+is not memory.
+
+``page_image`` exists because retrieval over slides has a blind spot text ranking
+cannot close: a tree rotation, a graph traversal or an ER diagram carries its meaning
+in drawn content, and the text layer around it is a title and a few labels. Search
+finds the right page and returns almost nothing. Rendering that page on request turns
+a citation the other tools already produce into something a model can look at.
 
 Two things are load-bearing and easy to get wrong:
 
@@ -42,11 +60,19 @@ import re
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from mcp.server import MCPServer  # noqa: E402
+from mcp.server.mcpserver.utilities.types import Image  # noqa: E402
 
 from courserag.config import Config, load_config  # noqa: E402
 from courserag.embedding import Embedder, get_embedder  # noqa: E402
 from courserag.manifest import Manifest, manifest_path, read_manifest  # noqa: E402
+from courserag.memory import NoteRefused, append_note, for_prompt, read_notes  # noqa: E402
 from courserag.records import ChunkRecord  # noqa: E402
+from courserag.rendering import (  # noqa: E402
+    DEFAULT_DPI,
+    RenderError,
+    page_stats,
+    render_page,
+)
 from courserag.retrieval import SearchResult, retrieve  # noqa: E402
 from courserag.store import CourseStore  # noqa: E402
 
@@ -57,7 +83,30 @@ server = MCPServer(
         "(lecture slides, assignments, readings, syllabi). Use search_course to answer "
         "questions about a specific course, and always cite the source file and page "
         "number that each passage came from. Call list_courses first if you are not "
-        "sure of the exact course id."
+        "sure of the exact course id.\n\n"
+        "Much of this material is slides, where the substance of a page is often drawn "
+        "rather than written: trees and their rotations, graphs and traversals, ER and "
+        "UML diagrams, plots, circuits, state machines, memory layouts. The extracted "
+        "text of such a page is not merely thin, it is misleading — an AVL tree comes "
+        "back as a bare run of numbers like '14 4 10 3 6 2 4 1', which is the node keys "
+        "and heights with the structure that connects them stripped out. Answering from "
+        "that produces confident nonsense.\n\n"
+        "So when a question turns on structure or on a figure, and when a retrieved "
+        "passage reads as scattered labels, stray numbers, or a caption with nothing "
+        "under it, call page_image(course, source_file, page) on the page the citation "
+        "already gives you and read the image instead. Use page_overview(course, "
+        "source_file) to find the figures in a document you do not know without "
+        "fetching every page. Prefer looking to guessing: these are the user's own "
+        "course notes, and a wrong description of a diagram is worse than none.\n\n"
+        "Each course also has notes, which arrive at the top of every search and read. "
+        "They hold what the documents do not say — the notation the professor uses, "
+        "material that was skipped, how the user wants things cited, a mark scheme "
+        "corrected out loud. Treat them as standing instructions about that course and "
+        "let them override the documents where they conflict. When the user tells you "
+        "something durable of that kind, call remember(course, note) so the next session "
+        "starts with it. One fact per call, phrased to survive without today's context. "
+        "Do not record what is already in the documents, and do not use it as a "
+        "scratchpad: notes are permanent and shown on every later read."
     ),
 )
 
@@ -75,6 +124,18 @@ class CourseUnavailable(Exception):
     from "no course named X; here are the real ones" on its next call, but a traceback
     only ends the turn.
     """
+
+
+def _with_notes(cfg: Config, course: str, body: str) -> str:
+    """Put a course's notes above a tool's output.
+
+    Notes ride along on *every* read rather than waiting to be asked for, because the
+    things they hold — the professor's notation, material that was skipped, how the user
+    wants citations formatted — change how the passages below should be read. A note
+    nobody sees until they think to look it up is not memory, it is a file.
+    """
+    notes = for_prompt(cfg, course)
+    return f"{notes}\n\n{body}" if notes else body
 
 
 def _course_ids(cfg: Config) -> list[str]:
@@ -308,6 +369,15 @@ def course_info(course: str) -> str:
             "embedding model. Searching it returns noise. Tell the user it needs "
             "rebuilding.",
         ]
+    if notes := read_notes(cfg, course):
+        lines += ["", "Notes on this course (recorded by you or the user):", notes]
+    else:
+        lines += [
+            "",
+            "No notes recorded for this course yet. Use remember() for facts its "
+            "documents do not state — notation the professor uses, material that was "
+            "skipped, how the user wants things cited.",
+        ]
     return "\n".join(lines)
 
 
@@ -357,7 +427,7 @@ def search_course(
             f"WARNING: {course} was indexed with placeholder vectors, so the ranking "
             f"below is random and must not be presented as an answer.\n\n" + header
         )
-    return f"{header}\n\n{_format(results)}"
+    return _with_notes(cfg, course, f"{header}\n\n{_format(results)}")
 
 
 @server.tool()
@@ -434,7 +504,127 @@ def read_document(course: str, source_file: str, pages: str = "") -> str:
             f"NOTE: {course} was indexed with placeholder vectors. The text below is "
             f"still the real document — only its search ranking is meaningless.\n\n" + header
         )
-    return f"{header}\n\n{body}"
+    return _with_notes(cfg, course, f"{header}\n\n{body}")
+
+
+@server.tool()
+def page_image(course: str, source_file: str, page: int, dpi: int = DEFAULT_DPI) -> list:
+    """Look at one page of a document as an image, instead of reading its text.
+
+    Use this when the answer is *drawn* rather than written — an AVL rotation, a graph
+    traversal, a B-tree split, an ER or UML diagram, a plotted curve, a circuit. The
+    text layer of such a page is usually a title and a few scattered labels, so
+    search_course and read_document can return the right page and still tell you almost
+    nothing. They cite pages as "module05.pdf p30"; pass that file and page here.
+
+    Typical use: search_course first to find *which* page discusses the thing, then this
+    to actually see it. Call page_overview if you need to find the diagrams in a
+    document without fetching every page.
+
+    Args:
+        course: Course id, as list_courses reports it.
+        source_file: Document name, exactly as a citation gives it.
+        page: 1-based page number, matching the citations search returns.
+        dpi: Resolution, 40-300. The default is readable for slides; raise it for a
+            dense figure with small labels, lower it if you only need the layout.
+    """
+    cfg = load_config()
+    try:
+        _resolve(cfg, course)
+        rendered = render_page(cfg, course, source_file, page, dpi)
+    except (CourseUnavailable, RenderError) as exc:
+        # Handed back as the result, like every other tool here: an agent can recover
+        # from "no course named X; here are the real ones" on its next call, but an
+        # exception only ends the turn.
+        return [str(exc)]
+    # A list of [text, image] reaches the caller as two content blocks: the caption
+    # says what was rendered, the image is the page itself.
+    return [rendered.summary(), Image(data=rendered.png, format="png")]
+
+
+@server.tool()
+def page_overview(course: str, source_file: str) -> str:
+    """Show what is on each page of a document, so you can pick which to look at.
+
+    Renders nothing and costs no image tokens. Use it to locate the diagrams in a long
+    deck before calling page_image, rather than fetching pages one at a time.
+
+    Read the numbers *relative to the rest of the document*, not against any absolute
+    bar: what counts as drawing-heavy differs enormously between one course's slides and
+    another's. A page well above its document's median drawing count, or one carrying
+    many short label-like text runs and little prose, is usually a figure.
+    """
+    cfg = load_config()
+    try:
+        _resolve(cfg, course)
+        stats = page_stats(cfg, course, source_file)
+    except (CourseUnavailable, RenderError) as exc:
+        return str(exc)
+    if not stats:
+        return (
+            f"{source_file} is not a PDF, so it has no pages to preview. "
+            f"Read it with read_document."
+        )
+
+    drawings = sorted(s.drawings for s in stats)
+    median = drawings[len(drawings) // 2]
+    lines = [
+        f"{source_file} in {course}: {len(stats)} pages. "
+        f"Median vector drawings per page: {median}. Pages well above that, or with "
+        f"many short text runs and few characters, are likely diagrams.",
+        "",
+        f"{'page':>5}  {'chars':>6}  {'drawings':>8}  {'images':>6}  {'text runs':>9}",
+    ]
+    for s in stats:
+        lines.append(
+            f"{s.page:>5}  {s.text_chars:>6}  {s.drawings:>8}  {s.images:>6}  "
+            f"{s.spans:>4} ({s.short_spans} short)"
+        )
+    return "\n".join(lines)
+
+
+@server.tool()
+def remember(course: str, note: str) -> str:
+    """Record one lasting fact about a course, for every future session to see.
+
+    This is the only tool here that writes anything, and it writes notes — never
+    documents, never the index. Use it for what the course materials do not state and
+    retrieval therefore cannot find:
+
+    * notation and conventions ("the professor writes n for input size, never N")
+    * what the course actually covered ("module 7 was skipped this term")
+    * the user's standing preferences ("cite by module number, not filename")
+    * facts stated once out loud ("A4 is worth 20%, not the 15% on the syllabus")
+
+    Do not use it for anything already in the documents — that is what search_course is
+    for, and duplicating a passage here only makes every future read longer. Do not use
+    it as a scratchpad for the current turn; notes are permanent and shown on every
+    subsequent search of this course.
+
+    One fact per call, phrased so it still makes sense months from now, in a session
+    with none of this context. Notes are appended and dated; an exact repeat of an
+    existing note is recognised and not stored twice. Editing or removing a note is
+    deliberately not possible here — the user does that with `kb notes` or an editor.
+    """
+    cfg = load_config()
+    try:
+        _resolve(cfg, course)
+    except CourseUnavailable as exc:
+        return str(exc)
+
+    try:
+        result = append_note(cfg, course, note)
+    except NoteRefused as exc:
+        return f"Not recorded: {exc}"
+    except OSError as exc:
+        return f"Could not write the notes file for {course}: {exc}"
+
+    if not result.added:
+        return (
+            f"Already known for {course}, so nothing was added:\n  {result.note}\n\n"
+            f"Current notes:\n{result.text}"
+        )
+    return f"Recorded for {course}:\n  {result.note}\n\nCurrent notes:\n{result.text}"
 
 
 def main() -> None:

@@ -37,7 +37,10 @@
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
   header .spacer { flex: 1; }
+  /* Two columns normally; a third opens for the viewer. The middle column's width is
+     a CSS variable so the splitter can drag it without touching the other tracks. */
   main { flex: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
+  main.viewing { grid-template-columns: 240px var(--list-w, 420px) 5px 1fr; }
 
   /* ---- sidebar ---- */
   aside {
@@ -93,6 +96,34 @@
     display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11.5px;
     background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
   }
+  /* The category is editable, so it is a real select — dressed as the tag it replaces
+     rather than as a form control, since a table of dropdowns reads as noise. */
+  select.cat {
+    font-family: inherit; padding: 1px 18px 1px 7px; cursor: pointer;
+    appearance: none; -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 9px) 52%, calc(100% - 5px) 52%;
+    background-size: 4px 4px, 4px 4px;
+    background-repeat: no-repeat;
+  }
+  select.cat:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ---- edit mode ---- */
+  button.toggle[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600;
+  }
+  /* The whole table shifts rather than each control deciding for itself, so read-only
+     really is read-only: nothing destructive is even in the DOM. */
+  table:not(.editing) td.act { display: none; }
+  table:not(.editing) th.act { display: none; }
+  input.rename {
+    font: inherit; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; width: 100%;
+    max-width: 30ch;
+  }
+  input.rename:focus { outline: none; border-color: var(--accent); }
+  input.rename.dirty { border-color: var(--warn); }
   .pill { font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
   .pill.pending { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
   .pill.missing { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
@@ -132,6 +163,49 @@
     border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- file viewer ---- */
+  .name-btn {
+    background: none; border: 0; padding: 0; font: inherit; color: var(--text);
+    cursor: pointer; text-align: left; border-bottom: 1px solid transparent;
+  }
+  .name-btn:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  .name-btn:disabled { color: var(--muted); cursor: default; border-bottom-color: transparent; }
+
+  /* The viewer is a pane in the grid, not an overlay: the list stays usable beside it. */
+  #viewer[hidden], #splitter[hidden] { display: none; }
+  #viewer {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    border-left: 1px solid var(--line); background: var(--panel);
+  }
+  .viewer-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-bottom: 1px solid var(--line); flex: none;
+  }
+  .viewer-head .title {
+    font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .viewer-head .spacer { flex: 1; }
+  .viewer-body { flex: 1; min-height: 0; background: var(--panel-2); }
+  .viewer-body iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+  #splitter { cursor: col-resize; background: transparent; }
+  #splitter:hover, #splitter.dragging { background: var(--accent); }
+  body.resizing { cursor: col-resize; user-select: none; }
+  /* While dragging, the iframe would swallow the mouse events. */
+  body.resizing iframe { pointer-events: none; }
+
+  /* Beside the viewer the list drops to name + category; size and chunk counts are
+     detail you want when surveying a course, not when reading one document. */
+  table.condensed th:nth-child(3), table.condensed td:nth-child(3),
+  table.condensed th:nth-child(4), table.condensed td:nth-child(4) { display: none; }
+  tr.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  tr.active .name-btn { color: var(--accent); font-weight: 600; }
+  a.btnlink {
+    font: inherit; color: var(--text); background: var(--panel-2); text-decoration: none;
+    border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px;
+  }
+  a.btnlink:hover { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -141,7 +215,7 @@
   <span id="globalNote" class="meta" style="margin:0"></span>
 </header>
 
-<main>
+<main id="main">
   <aside>
     <div class="aside-head">Courses</div>
     <div class="courses" id="courseList"></div>
@@ -149,6 +223,19 @@
   </aside>
 
   <section id="detail"><div class="empty">Select a course, or create one.</div></section>
+
+  <div id="splitter" hidden></div>
+
+  <section id="viewer" hidden>
+    <div class="viewer-head">
+      <span class="title" id="viewerName"></span>
+      <span class="meta" style="margin:0" id="viewerMeta"></span>
+      <span class="spacer"></span>
+      <a class="btnlink" id="viewerTab" target="_blank" rel="noopener">Open in tab</a>
+      <button id="viewerClose" title="Close (Esc)">&#10005;</button>
+    </div>
+    <div class="viewer-body" id="viewerBody"></div>
+  </section>
 </main>
 
 <input type="file" id="filePick" multiple hidden>
@@ -157,7 +244,11 @@
 "use strict";
 
 const $ = (sel, root = document) => root.querySelector(sel);
-const state = { courses: [], current: null, detail: null, poll: null, extensions: [] };
+const state = {
+  courses: [], current: null, detail: null, poll: null, extensions: [],
+  viewing: null,   // basename of the file open in the right-hand pane
+  editing: false,  // course page is read-only until this is on
+};
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -206,6 +297,8 @@ async function loadCourses() {
 }
 
 async function select(id) {
+  // The open document belongs to the course being left, so it does not survive the move.
+  if (id !== state.current) closeViewer();
   state.current = id;
   await loadCourses();
   await refresh();
@@ -233,16 +326,35 @@ function render() {
   const pending = d.files.filter((f) => f.on_disk && !f.indexed).length;
   const missing = d.files.filter((f) => !f.on_disk && f.indexed).length;
 
+  // Every category the course knows, from stored chunks and from the folder tree
+  // alike — a folder holding only unsynced files is still a category you can move to.
+  const cats = [...new Set([...(d.categories || []), ...d.files.map((f) => f.category)])]
+    .filter(Boolean).sort();
+
   const rows = d.files.map((f) => {
     let flag = "";
     if (f.on_disk && !f.indexed) flag = '<span class="pill pending">not indexed</span>';
     else if (!f.on_disk && f.indexed) flag = '<span class="pill missing">file missing</span>';
+    // Only a file still on disk can be opened or edited; one that is indexed but
+    // missing has nothing to show, so the name is inert rather than a link to a 404.
+    const openable = f.on_disk;
+    const nameCell = state.editing && openable
+      ? `<input class="rename" data-rename="${esc(f.name)}" value="${esc(f.name)}"
+             spellcheck="false" aria-label="File name">`
+      : `<button class="name-btn" data-view="${esc(f.name)}" ${openable ? "" : "disabled"}
+             title="${openable ? "Open" : "File is not on disk"}">${esc(f.name)}</button>`;
+    const catCell = !openable ? ""
+      : state.editing ? catSelect(f, cats)
+      : `<span class="tag">${esc(f.category)}</span>`;
     return `<tr>
-      <td>${esc(f.name)}${flag}</td>
-      <td>${f.category ? `<span class="tag">${esc(f.category)}</span>` : ""}</td>
+      <td>${nameCell}${flag}</td>
+      <td>${catCell}</td>
       <td class="num">${fmtSize(f.size)}</td>
       <td class="num">${f.chunks ? f.chunks.toLocaleString() : "&mdash;"}</td>
-      <td class="act"><button class="icon" data-del="${esc(f.name)}" title="Remove from course">&#10005;</button></td>
+      <td class="act">
+        ${openable ? `<button class="icon" data-view="${esc(f.name)}" title="Open">&#8599;</button>` : ""}
+        <button class="icon" data-del="${esc(f.name)}" title="Remove from course">&#10005;</button>
+      </td>
     </tr>`;
   }).join("");
 
@@ -271,6 +383,11 @@ function render() {
           ${d.last_indexed ? "&middot; last indexed " + esc(d.last_indexed.slice(0, 16).replace("T", " ")) : ""}
         </div>
       </div>
+      <a class="btnlink" id="exportBtn"
+         href="/api/courses/${encodeURIComponent(d.id)}/export"
+         title="Download this course as a shareable zip">Export</a>
+      <button class="toggle" id="editBtn" aria-pressed="${state.editing}"
+              title="Rename files and change categories">${state.editing ? "Done" : "Edit"}</button>
       <button id="syncBtn">Sync</button>
     </div>
     ${notices.join("")}
@@ -279,18 +396,175 @@ function render() {
       A folder becomes a category. Supported: ${state.extensions.join(", ")}
     </div>
     <div id="jobBox"></div>
-    ${d.files.length ? `<table>
-      <thead><tr><th>File</th><th>Category</th><th class="num">Size</th><th class="num">Chunks</th><th></th></tr></thead>
+    ${d.files.length ? `<table class="${state.editing ? "editing" : ""}">
+      <thead><tr><th>File</th><th>Category</th><th class="num">Size</th><th class="num">Chunks</th><th class="act"></th></tr></thead>
       <tbody>${rows}</tbody></table>` : '<div class="empty">Nothing in this course yet.</div>'}
   `;
 
   $("#syncBtn").onclick = doSync;
+  $("#editBtn").onclick = () => {
+    // Commit whatever is in a focused rename box before the table is rebuilt, or
+    // clicking Done would quietly discard a name the user just typed.
+    const open = document.activeElement;
+    if (open?.dataset?.rename) open.blur();
+    state.editing = !state.editing;
+    render();
+  };
   wireDropZone($("#drop"));
   for (const btn of document.querySelectorAll("[data-del]")) {
     btn.onclick = () => removeFile(btn.dataset.del);
   }
+  for (const btn of document.querySelectorAll("[data-view]")) {
+    btn.onclick = () => viewFile(btn.dataset.view);
+  }
+  for (const sel of document.querySelectorAll("[data-cat]")) {
+    sel.onchange = () => changeCategory(sel.dataset.cat, sel.value, sel);
+  }
+  for (const box of document.querySelectorAll("[data-rename]")) {
+    box.oninput = () => box.classList.toggle("dirty", box.value !== box.dataset.rename);
+    box.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); box.blur(); }
+      // Escape abandons the edit rather than committing a half-typed name.
+      if (e.key === "Escape") { box.value = box.dataset.rename; box.classList.remove("dirty"); box.blur(); }
+    };
+    box.onblur = () => renameFile(box.dataset.rename, box.value, box);
+  }
   if (state.detail.job) renderJob(state.detail.job);
+
+  // render() replaces the whole pane, so the viewer's effect on it is reapplied here
+  // rather than being lost to the next background refresh. If the open file has since
+  // left the folder — deleted here, or in Finder — the pane closes instead.
+  const open = state.viewing && d.files.find((f) => f.name === state.viewing && f.on_disk);
+  if (state.viewing && !open) closeViewer();
+  else { showViewer(Boolean(state.viewing)); markActiveRow(); }
 }
+
+/** The category cell: a select styled as the tag it replaces. */
+function catSelect(file, cats) {
+  const options = [...new Set([...cats, file.category])].filter(Boolean).sort()
+    .map((c) => `<option value="${esc(c)}"${c === file.category ? " selected" : ""}>${esc(c)}</option>`)
+    .join("");
+  return `<select class="tag cat" data-cat="${esc(file.name)}" title="Move to another category">
+    ${options}<option value="__new__">New category…</option></select>`;
+}
+
+async function renameFile(name, value, box) {
+  const wanted = value.trim();
+  if (!wanted || wanted === name) { box.value = name; box.classList.remove("dirty"); return; }
+
+  const form = new FormData();
+  form.append("new_name", wanted);
+  try {
+    const res = await api(`/api/courses/${encodeURIComponent(state.current)}/files/${encodeURIComponent(name)}`,
+      { method: "PATCH", body: form });
+    // The pane is showing a file that no longer exists under that name.
+    if (state.viewing === name) closeViewer();
+    box.classList.remove("dirty");
+    if (res.job) { renderJob(res.job); startPolling(res.job.id); }
+  } catch (e) {
+    note(e.message);
+    box.value = name;
+    box.classList.remove("dirty");
+  }
+}
+
+async function changeCategory(name, value, select) {
+  const current = state.detail.files.find((f) => f.name === name)?.category ?? "";
+  let category = value;
+  if (value === "__new__") {
+    category = prompt(`Move "${name}" to which category?`, current);
+    // Cancelled, or unchanged: put the select back rather than leaving it on the sentinel.
+    if (!category || category === current) { select.value = current; return; }
+  }
+  const form = new FormData();
+  form.append("category", category);
+  try {
+    const res = await api(`/api/courses/${encodeURIComponent(state.current)}/files/${encodeURIComponent(name)}`,
+      { method: "PATCH", body: form });
+    if (res.job) { renderJob(res.job); startPolling(res.job.id); }
+  } catch (e) {
+    note(e.message);
+    select.value = current;
+  }
+}
+
+// ------------------------------------------------------------------- viewer --
+
+/** Open one source file in the right-hand pane, rendered by the browser's own viewer. */
+function viewFile(name) {
+  const file = state.detail?.files.find((f) => f.name === name);
+  if (!file?.on_disk) return;
+  if (state.viewing === name) return closeViewer();   // clicking the open file closes it
+
+  const url = `/api/courses/${encodeURIComponent(state.current)}/raw/${encodeURIComponent(name)}`;
+  state.viewing = name;
+  $("#viewerName").textContent = name;
+  $("#viewerName").title = name;
+  $("#viewerMeta").textContent =
+    [file.category, fmtSize(file.size), file.chunks ? `${file.chunks} chunks` : "not indexed"]
+      .filter(Boolean).join(" · ");
+  $("#viewerTab").href = url;
+  // Rebuild the iframe each time rather than reassigning src: swapping the src of a
+  // live PDF viewer leaves the previous document's scroll position and, in Safari,
+  // sometimes the previous document.
+  $("#viewerBody").innerHTML = `<iframe src="${url}" title="${esc(name)}"></iframe>`;
+  showViewer(true);
+  markActiveRow();
+}
+
+function closeViewer() {
+  state.viewing = null;
+  $("#viewerBody").innerHTML = "";   // stop a hidden PDF from rendering
+  showViewer(false);
+  markActiveRow();
+}
+
+function showViewer(on) {
+  $("#viewer").hidden = !on;
+  $("#splitter").hidden = !on;
+  $("#main").classList.toggle("viewing", on);
+  const table = document.querySelector("#detail table");
+  if (table) table.classList.toggle("condensed", on);
+}
+
+/** Highlight the row whose file is open, without re-rendering the table. */
+function markActiveRow() {
+  for (const btn of document.querySelectorAll("[data-view]")) {
+    btn.closest("tr")?.classList.toggle("active", btn.dataset.view === state.viewing);
+  }
+}
+
+$("#viewerClose").onclick = closeViewer;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.viewing) closeViewer();
+});
+
+// ---- splitter: drag the boundary between the list and the viewer ----
+
+$("#splitter").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const main = $("#main");
+  const sidebar = main.firstElementChild.getBoundingClientRect().width;
+  const splitter = $("#splitter");
+  splitter.classList.add("dragging");
+  document.body.classList.add("resizing");
+  splitter.setPointerCapture(e.pointerId);
+
+  const onMove = (ev) => {
+    // Clamp so neither pane can be dragged away entirely.
+    const w = Math.min(Math.max(ev.clientX - main.getBoundingClientRect().left - sidebar, 240),
+                       main.clientWidth - sidebar - 320);
+    main.style.setProperty("--list-w", `${w}px`);
+  };
+  const onUp = () => {
+    splitter.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    splitter.removeEventListener("pointermove", onMove);
+    splitter.removeEventListener("pointerup", onUp);
+  };
+  splitter.addEventListener("pointermove", onMove);
+  splitter.addEventListener("pointerup", onUp);
+});
 
 // -------------------------------------------------------------- job polling --
 
@@ -441,7 +715,11 @@ $("#newCourse").onclick = async () => {
 };
 
 // Files changed outside the browser (Finder, a git pull) show up within a few seconds.
-setInterval(() => { if (state.current && !state.poll) refresh(); }, 5000);
+// Paused while editing: refresh() rebuilds the table, which would wipe a half-typed
+// name out from under the cursor. Changes made elsewhere appear on Done.
+setInterval(() => {
+  if (state.current && !state.poll && !state.editing) refresh();
+}, 5000);
 
 (async () => {
   await loadCourses();

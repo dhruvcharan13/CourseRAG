@@ -17,10 +17,14 @@ extra never costs the CLI anything.
 
 from __future__ import annotations
 
+import mimetypes
+import os
+import tempfile
 from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 
 from courserag.config import Config, load_config
 from courserag.ingest import (
@@ -37,13 +41,18 @@ from courserag.parsing import supported_extensions
 from courserag.store import CourseStore
 from courserag.sync import (
     SOURCE_DIR_NAME,
+    RenameRefused,
     SyncRefused,
     apply_sync,
+    clean_category,
     forget_source,
     plan_sync,
+    rename_source,
     scan_sources,
+    set_category,
     source_root,
 )
+from courserag.transfer import TransferError, default_export_name, export_course
 from courserag.web.jobs import Job, JobQueue
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -274,6 +283,53 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         job = _submit_sync(course_id, f"Indexing {len(written)} file(s)")
         return {"written": written, "skipped": skipped, "job": job.as_dict()}
 
+    @app.get("/api/courses/{course_id}/export")
+    def export_archive(course_id: str) -> FileResponse:
+        """Download the course as a shareable zip.
+
+        Built into a temp file and deleted once the response is sent, so a browser
+        download costs no permanent disk and two people exporting at once cannot
+        collide on a name.
+        """
+        _require_course(course_id)
+        fd, tmp = tempfile.mkstemp(suffix=".zip", prefix=f"{course_id}-")
+        os.close(fd)
+        try:
+            export_course(config, course_id, Path(tmp))
+        except (IngestError, TransferError) as exc:
+            os.unlink(tmp)
+            raise HTTPException(400, str(exc)) from exc
+        return FileResponse(
+            tmp,
+            media_type="application/zip",
+            filename=default_export_name(course_id),
+            background=BackgroundTask(os.unlink, tmp),
+        )
+
+    @app.get("/api/courses/{course_id}/raw/{name:path}")
+    def file_bytes(course_id: str, name: str) -> FileResponse:
+        """Serve one source file back, for the in-page viewer.
+
+        The requested name is never joined onto a path. It is looked up by basename in
+        the course's own scan, so the only files reachable are ones sync already found
+        under ``raw/`` — a traversal string simply matches nothing. That is the same
+        reason chunks are keyed by basename, reused as an access rule.
+
+        ``inline`` disposition so the browser renders it (every current browser has a
+        built-in PDF viewer) rather than downloading it.
+        """
+        _require_course(course_id)
+        wanted = Path(name).name
+        match = scan_sources(config, course_id).files.get(wanted)
+        if match is None:
+            raise HTTPException(404, f"No file '{wanted}' in '{course_id}'.")
+        media_type, _ = mimetypes.guess_type(match.path.name)
+        return FileResponse(
+            match.path,
+            media_type=media_type or "application/octet-stream",
+            headers={"Content-Disposition": f'inline; filename="{wanted}"'},
+        )
+
     @app.post("/api/courses/{course_id}/sync")
     def sync_course(course_id: str) -> dict:
         """Reconcile after the folder was changed outside the browser."""
@@ -281,6 +337,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if (active := jobs.active_for(course_id)) is not None:
             return {"job": active.as_dict()}
         return {"job": _submit_sync(course_id, "Syncing").as_dict()}
+
+    @app.patch("/api/courses/{course_id}/files/{name:path}")
+    def update_file(
+        course_id: str,
+        name: str,
+        category: str | None = Form(None),
+        new_name: str | None = Form(None),
+    ) -> dict:
+        """Recategorize and/or rename one file, then reindex it.
+
+        Both edits in one call, and one sync at the end, because each is a move on disk
+        and syncing between them would index the file twice for no reason.
+
+        The sync is not optional bookkeeping: a chunk stores both its category and its
+        source file name, so until the file is reindexed the folder and the index
+        disagree — search would still report the old ones.
+        """
+        _require_course(course_id)
+        safe = Path(name).name
+        current = safe
+        changes = []
+
+        try:
+            if new_name is not None and Path(str(new_name).strip()).name != safe:
+                current = rename_source(config, course_id, safe, new_name).name
+                changes.append(f"renamed to {current}")
+            if category is not None:
+                target = clean_category(category, config)
+                # Rename first, so this moves the file under whatever it is now called.
+                set_category(config, course_id, current, target)
+                changes.append(f"category {target}")
+        except KeyError:
+            raise HTTPException(404, f"No file '{safe}' on disk in '{course_id}'.") from None
+        except RenameRefused as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        # Report the resulting state, not the requested one: with two edits in one call
+        # the caller should not have to work out what it ended up with.
+        landed = scan_sources(config, course_id).files.get(current)
+        settled = landed.category if landed else None
+
+        if not changes:
+            return {"name": current, "category": settled, "job": None}
+
+        job = _submit_sync(course_id, f"{safe}: {', '.join(changes)}")
+        return {"name": current, "category": settled, "job": job.as_dict()}
 
     @app.delete("/api/courses/{course_id}/files/{name:path}")
     def remove_file(course_id: str, name: str) -> dict:

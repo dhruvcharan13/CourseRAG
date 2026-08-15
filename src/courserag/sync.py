@@ -27,7 +27,7 @@ import json
 import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from courserag.config import Config
 from courserag.ingest import (
@@ -413,6 +413,119 @@ def apply_sync(
 # --------------------------------------------------------------------------- #
 
 
+def clean_category(raw: str | None, cfg: Config) -> str:
+    """Normalize a user-supplied category into one a folder can be named after.
+
+    A category *is* a directory path under ``raw/``, so the string has to survive being
+    used as one. Roots, ``..`` segments and dot-directories are dropped rather than
+    rejected, matching how uploaded paths are treated; a name that reduces to nothing
+    means the top of ``raw/``, whose category is the configured default.
+    """
+    parts = [
+        p
+        for p in PurePosixPath((raw or "").strip().replace("\\", "/")).parts
+        if p not in ("", ".", "..", "/") and not p.startswith(".")
+    ]
+    return "/".join(parts) or cfg.default_category
+
+
+def set_category(cfg: Config, course_id: str, name: str, category: str) -> Path:
+    """Move one source file into ``category``'s folder. Returns its new path.
+
+    Changing a category is changing where the file lives — there is no separate label
+    to edit, which is the whole point of the folder being the source of truth. The move
+    alone does not touch the index; the next sync sees the recorded category differ from
+    the folder's and reindexes the file, which is what rewrites its chunks' ``category``.
+
+    Raises:
+        KeyError: if the course has no such file on disk.
+    """
+    target = clean_category(category, cfg)
+    root = source_root(cfg, course_id)
+    src = scan_sources(cfg, course_id).files.get(name)
+    if src is None:
+        raise KeyError(name)
+
+    dest_dir = root if target == cfg.default_category else root / target
+    dest = dest_dir / src.name
+    if dest.resolve() == src.path.resolve():
+        return src.path
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    src.path.replace(dest)
+
+    # Leave no empty category folders behind: an abandoned one shows up nowhere in the
+    # UI (categories are derived from files) but does clutter the folder a user browses.
+    parent = src.path.parent
+    while parent != root and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+    return dest
+
+
+class RenameRefused(Exception):
+    """A rename would leave the course worse off, so it did not happen."""
+
+
+def rename_source(cfg: Config, course_id: str, name: str, new_name: str) -> Path:
+    """Rename one source file in place. Returns its new path.
+
+    The index keys chunks by basename, so a rename is not a metadata edit — it is a
+    delete of every chunk under the old name and a fresh ingest under the new one. That
+    is exactly what the next sync does on its own (the old name is in the manifest but
+    gone from disk; the new one is on disk but unknown), so this only has to move the
+    file and hand the sidecar entry across.
+
+    The category is untouched: the file stays in whatever folder it was in.
+
+    Raises:
+        KeyError: if the course has no such file on disk.
+        RenameRefused: if the new name is empty, is a path, loses its supported
+            extension, or collides with another file in the course.
+    """
+    scan = scan_sources(cfg, course_id)
+    src = scan.files.get(name)
+    if src is None:
+        raise KeyError(name)
+
+    # A basename, never a path: a rename must not be able to relocate a file, least of
+    # all out of the course.
+    target = Path(str(new_name).strip().replace("\\", "/")).name
+    if not target or target.startswith("."):
+        raise RenameRefused(f"'{new_name}' is not a usable file name.")
+    if target == src.name:
+        return src.path
+
+    # Without a parser for the new extension the next sync would skip the file as
+    # unsupported — deleting the old chunks and indexing nothing. Renaming a document
+    # is not a way to remove it.
+    extensions = supported_extensions()
+    if Path(target).suffix.lower() not in extensions:
+        raise RenameRefused(
+            f"'{target}' has no supported extension. Keep one of: "
+            f"{', '.join(sorted(extensions))}."
+        )
+    # Basenames identify chunks, so two files cannot share one — scan_sources refuses
+    # to index either of a colliding pair, which would silently drop both documents.
+    if target in scan.files:
+        raise RenameRefused(
+            f"'{course_id}' already has a file named '{target}' "
+            f"(at {scan.files[target].rel}). Names must be unique within a course."
+        )
+
+    dest = src.path.with_name(target)
+    src.path.replace(dest)
+
+    state = load_state(cfg, course_id)
+    if (entry := state.pop(name, None)) is not None:
+        # Carry the digest across so the next sync sees a new file to add and an old one
+        # to drop, rather than re-hashing an unchanged document under a new name.
+        entry["rel"] = str(PurePosixPath(dest.relative_to(source_root(cfg, course_id))))
+        state[target] = entry
+        save_state(cfg, course_id, state)
+    return dest
+
+
 def forget_source(cfg: Config, course_id: str, name: str) -> Path | None:
     """Delete a file from ``raw/`` and drop its sync state. Returns the path removed.
 
@@ -439,6 +552,11 @@ class ImportReport:
     copied: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     unsupported: list[str] = field(default_factory=list)
+    #: Two source files that would land on the same path, as ``(kept, dropped)``. Only
+    #: reachable with an explicit category, which flattens; the second is not copied.
+    collisions: list[tuple[str, str]] = field(default_factory=list)
+    #: Files that replaced an existing copy in ``raw/`` with different content.
+    replaced: list[str] = field(default_factory=list)
 
 
 def plan_import(
@@ -462,10 +580,17 @@ def import_paths(
 ) -> ImportReport:
     """Copy files and folders into a course's ``raw/``, without indexing anything.
 
-    A directory is copied as a category folder named after itself, so
-    ``import_paths(cfg, "CS247", [Path("~/slides/lecture")])`` lands its contents in
-    ``raw/lecture/`` and they ingest as category ``lecture``. An explicit ``category``
-    overrides that for everything in the call.
+    A directory keeps its shape. ``import_paths(cfg, "CS247", [Path("~/slides")])``
+    mirrors the whole tree under ``raw/slides/``, so ``~/slides/week1/05.pdf`` becomes
+    ``raw/slides/week1/05.pdf`` and ingests as category ``slides/week1``. This matches
+    what dropping the same folder into the web UI does, and it matters: flattening the
+    tree instead would collapse every week into one category and — where two subfolders
+    happen to hold the same file name — quietly overwrite one document with another.
+
+    An explicit ``category`` overrides that and puts everything in one folder, which is
+    what asking for a single category means. That *can* collide, so a second file
+    landing on a name already written in this call is reported and skipped rather than
+    overwriting the first.
 
     A file the course *already* indexes keeps the category it was indexed under,
     whatever folder the copy came from. This is what makes adopting a pre-sync course
@@ -487,33 +612,52 @@ def import_paths(
     except IngestError:
         indexed_categories = {}
 
-    def place(src: Path, sub: str | None) -> None:
+    written: dict[Path, str] = {}
+
+    def place(src: Path, sub: PurePosixPath) -> None:
         if src.name in _IGNORED_NAMES or src.name.startswith("."):
             return
         if src.suffix.lower() not in extensions:
             report.unsupported.append(src.name)
             return
+        # A file the course already indexes keeps the category the index recorded,
+        # whatever folder the copy came from — this is what makes adopting a pre-sync
+        # course lossless.
         if category is None and src.name in indexed_categories:
-            sub = indexed_categories[src.name]
-        dest_dir = root / sub if sub else root
+            sub = PurePosixPath(indexed_categories[src.name])
+
+        dest_dir = root / Path(*sub.parts) if sub.parts else root
         dest = dest_dir / src.name
-        if dest.exists() and dest.stat().st_size == src.stat().st_size:
-            report.skipped.append(src.name)
+
+        if (first := written.get(dest)) is not None:
+            report.collisions.append((first, str(src)))
             return
+        if dest.exists():
+            if dest.stat().st_size == src.stat().st_size:
+                report.skipped.append(src.name)
+                written[dest] = str(src)
+                return
+            report.replaced.append(str(dest.relative_to(root)))
+
         if not dry_run:
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+        written[dest] = str(src)
         report.copied.append(str(dest.relative_to(root)))
 
     for path in paths:
         path = path.expanduser()
         if path.is_dir():
-            sub = category if category is not None else path.name
+            # Mirror the tree under a folder named after the directory, unless a single
+            # category was asked for, in which case everything lands flat inside it.
+            base = PurePosixPath(category) if category is not None else PurePosixPath(path.name)
             for child in sorted(path.rglob("*")):
-                if child.is_file() and not any(p.startswith(".") for p in child.parts):
-                    place(child, sub)
+                if not child.is_file() or any(p.startswith(".") for p in child.parts):
+                    continue
+                rel = child.relative_to(path).parent
+                place(child, base if category is not None else base / rel.as_posix())
         elif path.is_file():
-            place(path, category)
+            place(path, PurePosixPath(category) if category is not None else PurePosixPath(""))
         else:
             report.unsupported.append(str(path))
     return report

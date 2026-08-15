@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shlex
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -39,8 +42,10 @@ from courserag.ingest import (
     resolve_embedder,
 )
 from courserag.manifest import Manifest, manifest_path, read_manifest, write_manifest
+from courserag.memory import NoteRefused, append_note, notes_path, read_notes
 from courserag.parsing import ParsedDocument, get_parser_for
 from courserag.records import ChunkRecord
+from courserag.rendering import DEFAULT_DPI, RenderError, page_stats, render_page
 from courserag.reranking import get_reranker
 from courserag.retrieval import SearchResult, retrieve
 from courserag.store import CourseStore
@@ -53,6 +58,13 @@ from courserag.sync import (
     plan_import,
     plan_sync,
     source_root,
+)
+from courserag.transfer import (
+    TransferError,
+    default_export_name,
+    export_course,
+    import_course,
+    read_metadata,
 )
 
 
@@ -331,18 +343,34 @@ def cmd_sync(args: argparse.Namespace) -> int:
             planned = plan_import(cfg, course_id, paths, category=args.category)
             for name in planned.copied:
                 print(f"  would copy into raw/: {name}")
+            for name in planned.replaced:
+                print(f"  would replace in raw/: {name}")
             if planned.skipped:
                 print(f"  already in raw/: {len(planned.skipped)} file(s)")
             for name in planned.unsupported:
                 print(f"  would skip (no parser): {name}", file=sys.stderr)
+            for kept, dropped in planned.collisions:
+                print(
+                    f"  would NOT copy: {dropped} (same name as {kept})", file=sys.stderr
+                )
         else:
             imported = import_paths(cfg, course_id, paths, category=args.category)
             for name in imported.copied:
                 print(f"  copied into raw/: {name}")
+            for name in imported.replaced:
+                print(f"  replaced in raw/: {name}")
             if imported.skipped:
                 print(f"  already in raw/: {len(imported.skipped)} file(s)")
             for name in imported.unsupported:
                 print(f"  skipped (no parser): {name}", file=sys.stderr)
+            for kept, dropped in imported.collisions:
+                print(
+                    f"  NOT copied: {dropped}\n"
+                    f"    would overwrite the copy already taken from {kept}. "
+                    f"Flattening into one category put them on the same name — import "
+                    f"without --category to keep the folder structure, or rename one.",
+                    file=sys.stderr,
+                )
 
     if not args.dry_run:
         root.mkdir(parents=True, exist_ok=True)
@@ -389,6 +417,185 @@ def cmd_sync(args: argparse.Namespace) -> int:
     print(
         f"'{course_id}' {verb}: {report.total_chunks} "
         f"{_plural(report.total_chunks, 'chunk')} across {files} {_plural(files, 'file')}."
+    )
+    return 1 if report.failed else 0
+
+
+def cmd_notes(args: argparse.Namespace) -> int:
+    """Read a course's notes, add one, or open them in an editor.
+
+    The editor path is the counterpart to the MCP server's append-only ``remember``:
+    changing or removing a note is a human's job, where the thing being deleted is
+    visible on screen.
+    """
+    cfg = load_config()
+    course_id = args.course_id
+
+    if not manifest_path(_course_dir(cfg, course_id)).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return 1
+
+    path = notes_path(cfg, course_id)
+
+    if args.edit:
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        return subprocess.call([*shlex.split(editor), str(path)])
+
+    if args.add:
+        try:
+            result = append_note(cfg, course_id, args.add)
+        except NoteRefused as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not result.added:
+            print(f"Already recorded for '{course_id}'; nothing added.")
+            return 0
+        print(f"Recorded for '{course_id}': {result.note}")
+        return 0
+
+    notes = read_notes(cfg, course_id)
+    if not notes:
+        print(
+            f"No notes for '{course_id}' yet ({path}).\n"
+            f'  Add one:  kb notes {course_id} --add "the prof writes n, never N"\n'
+            f"  Or edit:  kb notes {course_id} --edit"
+        )
+        return 0
+    print(notes)
+    return 0
+
+
+def cmd_page(args: argparse.Namespace) -> int:
+    """Render one page of a document to a PNG, or report what is on each page."""
+    cfg = load_config()
+    course_id = args.course_id
+
+    if not manifest_path(_course_dir(cfg, course_id)).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return 1
+
+    if args.overview:
+        try:
+            stats = page_stats(cfg, course_id, args.file)
+        except RenderError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not stats:
+            print(f"{args.file} is not a PDF; it has no pages.", file=sys.stderr)
+            return 1
+        median = sorted(s.drawings for s in stats)[len(stats) // 2]
+        print(f"{args.file}: {len(stats)} pages, median {median} vector drawings per page")
+        print(f"{'page':>5}  {'chars':>6}  {'drawings':>8}  {'images':>6}  {'text runs':>9}")
+        for s in stats:
+            print(
+                f"{s.page:>5}  {s.text_chars:>6}  {s.drawings:>8}  {s.images:>6}  "
+                f"{s.spans:>4} ({s.short_spans} short)"
+            )
+        return 0
+
+    if args.page is None:
+        print("error: give a page number, or --overview to list them all.", file=sys.stderr)
+        return 1
+
+    try:
+        rendered = render_page(cfg, course_id, args.file, args.page, args.dpi)
+    except RenderError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    dest = Path(args.output) if args.output else Path(
+        f"{Path(rendered.source_file).stem}-p{rendered.page}.png"
+    )
+    if dest.is_dir():
+        dest = dest / f"{Path(rendered.source_file).stem}-p{rendered.page}.png"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(rendered.png)
+    print(f"{rendered.summary()}\nWrote {dest}")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Write one course to a shareable zip."""
+    cfg = load_config()
+    course_id = args.course_id
+
+    if not manifest_path(_course_dir(cfg, course_id)).exists():
+        print(f"Course '{course_id}' is not initialized.", file=sys.stderr)
+        return 1
+
+    if args.output:
+        dest = Path(args.output)
+        # A trailing separator means "into this directory" even when it does not exist
+        # yet; without this check `-o dir/` silently writes a *file* called `dir`.
+        if dest.is_dir() or args.output.endswith(("/", os.sep)):
+            dest = dest / default_export_name(course_id)
+    else:
+        dest = Path(default_export_name(course_id))
+    if dest.exists() and not args.force:
+        print(f"error: {dest} already exists. Pass --force to overwrite.", file=sys.stderr)
+        return 1
+
+    try:
+        report = export_course(cfg, course_id, dest)
+    except TransferError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Exported '{report.course_id}' -> {report.path} "
+        f"({report.files} {_plural(report.files, 'file')}, {report.bytes / 1e6:.1f} MB)"
+    )
+    print(
+        f"  The archive carries the source documents, not the index. Importing rebuilds "
+        f"the {report.chunks} chunks locally, identically."
+    )
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Create a course from an archive somebody exported."""
+    cfg = load_config()
+    archive = Path(args.archive)
+
+    try:
+        metadata = read_metadata(archive)
+    except TransferError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    course_id = args.as_course or metadata["course"]
+    print(
+        f"Importing '{metadata['course']}'"
+        + (f" as '{course_id}'" if course_id != metadata["course"] else "")
+        + f": {len(metadata.get('files', []))} file(s), "
+        f"{metadata.get('chunk_count', 0)} chunks, {metadata['embedding_model']}"
+    )
+
+    try:
+        report = import_course(cfg, archive, as_course=args.as_course, force=args.force)
+    except TransferError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for name, message in report.failed:
+        print(f"  ! {name}: {message}", file=sys.stderr)
+
+    if report.exact:
+        print(
+            f"Imported '{report.course_id}': {report.chunks} chunks from "
+            f"{report.files} {_plural(report.files, 'file')} — an exact match for the export."
+        )
+        return 0
+
+    # Not fatal, but never silent: the recipient should know their copy differs.
+    print(
+        f"Imported '{report.course_id}': {report.chunks} chunks from {report.files} "
+        f"{_plural(report.files, 'file')}, but the archive recorded "
+        f"{report.expected_chunks}. The courses are not identical — a different "
+        f"pymupdf version can parse a PDF slightly differently.",
+        file=sys.stderr,
     )
     return 1 if report.failed else 0
 
@@ -952,6 +1159,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sync even when raw/ is missing or empty (which would clear the index).",
     )
     p_sync.set_defaults(func=cmd_sync)
+
+    p_notes = sub.add_parser(
+        "notes", help="Read, append to, or edit a course's notes (its COURSE.md)."
+    )
+    p_notes.add_argument("course_id")
+    p_notes.add_argument("--add", metavar="NOTE", help="Append one dated note.")
+    p_notes.add_argument(
+        "--edit", action="store_true", help="Open the notes in $EDITOR (to change or remove)."
+    )
+    p_notes.set_defaults(func=cmd_notes)
+
+    p_page = sub.add_parser(
+        "page", help="Render one page of a document as a PNG, or preview every page."
+    )
+    p_page.add_argument("course_id")
+    p_page.add_argument("file", help="Document name, as kb info lists it.")
+    p_page.add_argument("page", nargs="?", type=int, help="1-based page number.")
+    p_page.add_argument(
+        "--overview", action="store_true", help="List per-page text/drawing counts instead."
+    )
+    p_page.add_argument(
+        "--dpi", type=int, default=DEFAULT_DPI, help=f"Resolution (default: {DEFAULT_DPI})."
+    )
+    p_page.add_argument("-o", "--output", help="Destination PNG or directory.")
+    p_page.set_defaults(func=cmd_page)
+
+    p_export = sub.add_parser("export", help="Write one course to a shareable zip.")
+    p_export.add_argument("course_id")
+    p_export.add_argument("-o", "--output", help="Destination file or directory.")
+    p_export.add_argument("--force", action="store_true", help="Overwrite an existing archive.")
+    p_export.set_defaults(func=cmd_export)
+
+    p_import = sub.add_parser("import", help="Create a course from an exported zip.")
+    p_import.add_argument("archive")
+    p_import.add_argument(
+        "--as", dest="as_course", metavar="COURSE_ID", help="Import under a different name."
+    )
+    p_import.add_argument("--force", action="store_true", help="Replace an existing course.")
+    p_import.set_defaults(func=cmd_import)
 
     p_web = sub.add_parser("web", help="Serve a local UI for managing course files.")
     p_web.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")

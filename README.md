@@ -45,6 +45,11 @@ kb search CS240 "..." -k 10 --json       # same, as JSON on stdout for piping
 kb search CS240 "..." --file module05.pdf     # search inside one document only
 kb show CS240 module05.pdf               # read a document straight through
 kb show CS240 module05.pdf --pages 20-31 # ...or one page range of it
+kb page CS240 module04.pdf 59             # render one page as a PNG (diagrams, graphs)
+kb page CS240 module04.pdf --overview     # what is on each page, without rendering
+kb notes CS240                           # read the course's notes (its COURSE.md)
+kb notes CS240 --add "the prof writes n, never N"   # append one dated fact
+kb notes CS240 --edit                    # open them in $EDITOR (to change or remove)
 kb eval CS240                            # score search against evals/CS240.json
 kb chunks CS240 path/to/module05.pdf --report  # how a file chunks, without embedding or storing
 ```
@@ -65,6 +70,90 @@ model — a vector is a pure function of chunk text, so removing rows costs no i
 unavailable. It prunes old table versions to give the disk space back, so a delete
 cannot be rolled back; re-ingesting the source file restores it exactly.
 
+## Diagrams: when the answer is drawn, not written
+
+Text retrieval has a blind spot no amount of better ranking closes. Here is the entire
+text layer of an AVL-deletion slide:
+
+```
+AVL trees deletion: Example
+Important: Ties must be broken to avoid double rotation.
+14 4 10 3 6 2 4 1 2 0 8 0 13 0 28 2 18 1 16 0 37 1 31 0 46 0
+Resulting tree is not an AVL-tree.
+```
+
+Those numbers are the node keys and heights. The tree they hang on — which child is
+which, where the violation is — exists only as vector drawing. Search finds this page
+correctly and then hands back something no one can answer from.
+
+So the fix is not to make search see pictures. It is to let a caller that already knows
+which page it wants ask for that page *as an image*:
+
+```bash
+kb page CS240 module04.pdf 59            # -> module04-p59.png
+kb page CS240 module04.pdf 59 --dpi 220  # denser figure, small labels
+kb page CS240 module04.pdf --overview    # pick pages without rendering any
+```
+
+Over MCP the same thing is a tool: `search_course` cites `module04.pdf p59`, and
+`page_image("CS240", "module04.pdf", 59)` returns that page as an image the model can
+actually look at, alongside a caption. `page_overview` lists per-page text and drawing
+counts so it can find the figures in a 60-slide deck without fetching 60 images.
+
+Selective by construction: nothing is rendered at ingest, nothing is stored, and a page
+costs ~8ms and ~70KB only when something asks for it.
+
+**There is deliberately no "this page is a figure" flag**, because the obvious ones do
+not survive real decks. CS240's module05 runs a median of 65 vector drawings per page;
+CS348's ER-diagram deck — 50 pages that are almost nothing but diagrams — runs a median
+of 5, max 13. A threshold tuned on the first flags nothing on the second, and text
+length does not separate them either, since an ER diagram's entity labels count as text.
+What *is* stable is the comparison within one document, so `--overview` reports each
+page's counts against that document's median and leaves the judgement to the reader.
+
+Rendering reads the file from `raw/`, so it works for anything `kb sync` put there. A
+document indexed with `kb ingest` from somewhere else is searchable but not viewable —
+the error says so.
+
+## Per-course memory
+
+Every course folder has held a `COURSE.md` since the first commit, created empty and
+never read — the same state `raw/` was in before `kb sync`. It now holds what is true
+about the *course* rather than what is written in its documents:
+
+```
+- 2026-08-12: The professor writes n for input size, never N.
+- 2026-08-12: Module 7 was not covered this term; do not cite it.
+- 2026-08-12: Cite by module number, not filename.
+```
+
+Retrieval cannot produce any of that. It is either nowhere in the slides or buried in one
+spoken aside, and no ranking recovers it. So it sits beside the index as plain markdown
+and is **prepended to every read of the course** — `search_course`, `read_document` and
+`course_info` all lead with it. A note nobody sees until they think to look it up is a
+file, not memory.
+
+```bash
+kb notes CS240                                       # read
+kb notes CS240 --add "the prof writes n, never N"    # append one dated fact
+kb notes CS240 --edit                                # change or remove, in $EDITOR
+```
+
+Over MCP an agent records a fact with `remember(course, note)`. **This is the only tool
+on that server that writes anything, and it writes only notes** — nothing there can
+ingest a document, delete a chunk or touch the index.
+
+**Appends, never rewrites.** An agent able to rewrite the file could erase a term of
+accumulated notes in one bad call, and the failure would be silent, since nothing else
+reads it. So `remember` can only add; editing and deleting need `kb notes --edit`, where
+a human sees what is being removed. An exact repeat of an existing fact is recognised and
+not stored twice, because an agent re-learning the same thing every session would
+otherwise grow a file that rides along on every search.
+
+The generated header is stripped before the notes are pasted above search results, and
+anything you write by hand — your own headings, prose, structure — is preserved as-is.
+Long notes truncate at a line boundary with a pointer to `course_info` for the rest.
+
 ## Managing files: the folder is the source of truth
 
 Each course has always had a `raw/` folder, created by `init-course`. `kb sync` makes it
@@ -83,8 +172,21 @@ pointed at the folder, a synced Dropbox directory. `kb web` is just the one that
 shows you chunk counts.
 
 **A subfolder names a category.** `raw/lecture/05.pdf` ingests as category `lecture`;
-a file loose at the top gets `default_category` (`notes`). Nothing else about the tree
-is interpreted, and moving a file between folders recategorizes it on the next sync.
+a file loose at the top gets `default_category` (`notes`). Nesting goes as deep as you
+like and joins with a slash — `raw/slides/week1/mon/05.pdf` is category
+`slides/week1/mon`. Nothing else about the tree is interpreted, and moving a file
+between folders recategorizes it on the next sync.
+
+**Importing a folder keeps its shape.** `kb sync CS247 --from ~/slides` mirrors the
+whole tree under `raw/slides/`, so each subfolder becomes its own category — the same
+thing dropping that folder into the web UI does. Passing `--category X` instead puts
+everything flat in one folder, which is what asking for a single category means; when
+that makes two files collide on one name, the second is reported and skipped rather than
+overwriting the first.
+
+**File names must be unique within a course**, at any depth, because chunks are keyed by
+basename. Two `notes.txt` in different week folders are both kept on disk but neither is
+indexed, and sync says which two collided so you can rename one.
 
 **Editing a file reindexes it, rather than appending to it.** This is the one thing a
 mirror needs that plain re-ingest cannot do: chunk dedup is by content hash, so
@@ -158,7 +260,8 @@ generation-only — so it is never the embedding default.)
 > Status: **working**. Parsing, chunking, per-course stores, real local embeddings
 > (384-dim bge), `kb search`/`kb show`/`kb eval`, an opt-in cross-encoder reranker,
 > folder-mirroring ingest (`kb sync`) with a local UI (`kb web`), and
-> a four-tool MCP server all work, the last acceptance-tested against four real courses.
+> a six-tool MCP server (including on-demand page images for diagrams) all work,
+> the last acceptance-tested against four real courses.
 > Hybrid retrieval (BM25 + rank fusion) was measured and **rejected**
 > — see [The dense-only baseline](#the-dense-only-baseline). A D2L integration comes later.
 
@@ -307,15 +410,33 @@ retrieval miss.
 ## MCP server
 
 Exposes the knowledge base to an agent, so you can ask about your own course materials
-and get answers cited back to a file and page. Four read-only tools — `list_courses`,
-`course_info`, `search_course(course, query, k=5, rerank=False, source_file="")`, and
-`read_document(course, source_file, pages="")`. Ingestion stays in the CLI: the agent
-can read the knowledge base, never rewrite it.
+and get answers cited back to a file and page. Seven tools:
+
+| tool | for |
+| --- | --- |
+| `list_courses()` | which courses exist |
+| `course_info(course)` | one course's documents, categories and counts |
+| `search_course(course, query, k=5, rerank=False, source_file="")` | ranked, cited passages |
+| `read_document(course, source_file, pages="")` | one document straight through |
+| `page_image(course, source_file, page, dpi=150)` | that page **as an image** |
+| `page_overview(course, source_file)` | per-page text/drawing counts, nothing rendered |
+| `remember(course, note)` | record a lasting fact about the course |
+
+**Six are read-only; the seventh writes only notes.** `remember` appends to a course's
+`COURSE.md` — nothing here can ingest a document, delete a chunk or touch the index.
+Ingestion stays in the CLI. That boundary is the point: an agent may accumulate what it
+learns *about* a course, and cannot alter the course itself.
 
 `read_document` is the counterpart to `kb show`, and exists for the same reason: a
 top-k search cannot answer a question about a whole document. Long documents come back
 truncated at a *page boundary* with a marker naming the range to request next — never
 silently, and never splitting a page across two calls.
+
+`page_image` is the counterpart to `kb page`, and closes the gap described under
+[Diagrams](#diagrams-when-the-answer-is-drawn-not-written): the other five tools are all
+text, so a question whose answer is a drawn tree or graph is unanswerable from them no
+matter how well retrieval ranks. It returns a caption and the rendered page as two
+content blocks.
 
 ```bash
 claude mcp add courserag \
@@ -351,7 +472,7 @@ course-kb/                     # default root, overridable via config.toml
     index.lance/               # LanceDB dataset (one per course)
     raw/                       # source files — the source of truth for `kb sync`
       <category>/              # a subfolder names the category its files ingest as
-    COURSE.md                  # per-course memory
+    COURSE.md                  # per-course notes; prepended to every read
     manifest.json              # {course, embedding_model, dims, categories, files, last_indexed}
     sync.json                  # per-file digest/mtime, so sync can tell edits from no-ops
   models/                      # downloaded embedding models (cache_dir)

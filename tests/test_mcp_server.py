@@ -510,3 +510,215 @@ def test_unscoped_search_output_is_unchanged(tools):
     assert tools.search_course("CS240", "rotations") == tools.search_course(
         "CS240", "rotations", source_file=""
     )
+
+
+# --------------------------------------------------------------------------- #
+# Looking at a page
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def tools_with_sources(kb_root, monkeypatch):
+    """Like ``tools``, but with the PDF in the course's raw/ folder.
+
+    ``page_image`` reads the document itself, and ``kb ingest`` indexes a file without
+    copying it into the course — only ``kb sync`` puts sources under raw/. So a course
+    built by ingest alone can be searched but not looked at, which is exactly what this
+    fixture makes explicit by not being the default one.
+    """
+    from courserag.cli import main
+
+    (kb_root / "config.toml").write_text(
+        'embedder = "dummy"\nreranker = "dummy"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(kb_root)
+    monkeypatch.setenv("COURSE_KB_ROOT", str(kb_root))
+    assert main(["sync", "CS240", "--from", str(FIXTURES / "slides.pdf"),
+                 "--category", "lecture"]) == 0
+    import courserag.mcp_server as srv
+
+    return srv
+
+
+def test_page_image_returns_a_caption_and_an_image(tools_with_sources):
+    blocks = tools_with_sources.page_image("CS240", "slides.pdf", 1)
+
+    assert len(blocks) == 2
+    assert isinstance(blocks[0], str) and "slides.pdf page 1" in blocks[0]
+    content = blocks[1].to_image_content()
+    assert content.mime_type == "image/png"
+    assert content.data  # base64 payload, non-empty
+
+
+def test_page_image_reports_an_out_of_range_page_as_text(tools_with_sources):
+    """Errors come back as a message the model can act on, not an exception."""
+    blocks = tools_with_sources.page_image("CS240", "slides.pdf", 999)
+
+    assert len(blocks) == 1
+    assert "out of range" in blocks[0]
+
+
+def test_page_image_on_an_unknown_course_names_the_real_ones(tools_with_sources):
+    blocks = tools_with_sources.page_image("NOPE", "slides.pdf", 1)
+    assert "CS240" in blocks[0]
+
+
+def test_page_image_on_a_file_that_was_never_copied_into_the_course(tools):
+    """Ingested-from-elsewhere means searchable but not viewable; say which."""
+    blocks = tools.page_image("CS240", "slides.pdf", 1)
+
+    assert len(blocks) == 1
+    assert "no source file" in blocks[0]
+
+
+def test_page_overview_lists_every_page_without_rendering(tools_with_sources):
+    out = tools_with_sources.page_overview("CS240", "slides.pdf")
+
+    assert "pages" in out and "drawings" in out
+    assert "Median vector drawings" in out
+
+
+def test_page_overview_on_an_unknown_file_explains_itself(tools_with_sources):
+    assert "no source file" in tools_with_sources.page_overview("CS240", "ghost.pdf")
+
+
+def test_the_image_tools_are_registered_with_the_server(tools_with_sources):
+    names = {t.name for t in tools_with_sources.server._tool_manager.list_tools()}
+    assert {"page_image", "page_overview"} <= names
+
+
+# --------------------------------------------------------------------------- #
+# The server's own instructions
+# --------------------------------------------------------------------------- #
+
+
+def test_the_instructions_point_at_the_image_tools():
+    """Discovery of page_image rests entirely on this text.
+
+    There is no signal in a search result saying "this page is a diagram" — four
+    candidate detectors were measured against real decks and all of them failed, so
+    the instructions are the only thing telling a model that reading the extracted
+    text of a drawn page is worse than useless. Losing this paragraph would silently
+    return the server to answering AVL questions from a run of bare numbers.
+    """
+    import courserag.mcp_server as srv
+
+    instructions = srv.server.instructions
+    assert "page_image" in instructions
+    assert "page_overview" in instructions
+    # The concrete failure, not just the tool name: the point is *why* to look.
+    assert "misleading" in instructions
+
+
+def test_the_instructions_reach_a_client_over_stdio(kb_root, tmp_path):
+    """In-process is not the delivery path; the initialize response is."""
+    request = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "0"},
+                },
+            }
+        )
+        + "\n"
+    )
+    import os
+
+    result = subprocess.run(
+        [sys.executable, "-m", "courserag.mcp_server"],
+        input=request,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
+        env={**os.environ, "COURSE_KB_ROOT": str(kb_root)},
+    )
+    line = next(ln for ln in result.stdout.splitlines() if '"result"' in ln)
+    instructions = json.loads(line)["result"].get("instructions", "")
+
+    assert "page_image" in instructions, instructions
+
+
+# --------------------------------------------------------------------------- #
+# Per-course memory
+# --------------------------------------------------------------------------- #
+
+
+def test_notes_ride_along_on_every_read_of_a_course(tools):
+    """A note nobody sees until they look it up is a file, not memory."""
+    tools.remember("CS240", "The prof writes n for input size, never N.")
+
+    for out in (
+        tools.search_course("CS240", "skip lists"),
+        tools.read_document("CS240", "slides.pdf"),
+        tools.course_info("CS240"),
+    ):
+        assert "never N" in out, out
+
+
+def test_search_results_lead_with_the_notes(tools):
+    tools.remember("CS240", "Module 7 was skipped this term.")
+
+    out = tools.search_course("CS240", "skip lists")
+
+    assert out.index("Module 7 was skipped") < out.index("passage(s) from CS240")
+
+
+def test_a_course_with_no_notes_reads_exactly_as_before(tools):
+    out = tools.search_course("CS240", "skip lists")
+    assert out.startswith("Top ") or out.startswith("WARNING")
+
+
+def test_course_info_says_how_to_record_a_note_when_there_are_none(tools):
+    assert "remember()" in tools.course_info("CS240")
+
+
+def test_remember_stores_and_reports_the_note(tools):
+    out = tools.remember("CS240", "A4 is worth 20%, not the 15% on the syllabus.")
+
+    assert out.startswith("Recorded for CS240:")
+    assert "A4 is worth 20%" in out
+
+
+def test_remember_recognises_a_fact_it_already_knows(tools):
+    tools.remember("CS240", "The prof writes n, never N.")
+
+    out = tools.remember("CS240", "The prof writes n, never N.")
+
+    assert "Already known" in out
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_remember_refuses_an_empty_note(tools, bad):
+    assert "Not recorded" in tools.remember("CS240", bad)
+
+
+def test_remember_refuses_a_note_the_size_of_a_document(tools):
+    assert "Not recorded" in tools.remember("CS240", "x" * 5000)
+
+
+def test_remember_on_an_unknown_course_names_the_real_ones(tools):
+    out = tools.remember("NOPE", "a fact")
+    assert "CS240" in out and "No course named" in out
+
+
+def test_remember_is_the_only_tool_that_writes(tools):
+    """The boundary is load-bearing: an agent may accumulate notes, not alter a course."""
+    names = {t.name for t in tools.server._tool_manager.list_tools()}
+    assert "remember" in names
+    # Nothing here ingests, deletes, or syncs — those stay in the CLI.
+    assert not {"ingest", "delete", "sync", "init_course"} & names
+
+
+def test_notes_written_by_the_cli_are_visible_to_the_server(kb_root, tools):
+    """One file, two front-ends; `kb notes` and remember() must not diverge."""
+    (kb_root / "courses" / "CS240" / "COURSE.md").write_text(
+        "- 2026-03-01: Written by hand.\n", encoding="utf-8"
+    )
+
+    assert "Written by hand" in tools.search_course("CS240", "skip lists")

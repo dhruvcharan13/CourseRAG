@@ -8,6 +8,10 @@ heavy modules ended up in ``sys.modules``.
 imports :mod:`courserag.mcp_server`, and that has to stay true — it is the only reason
 the ``[mcp]`` extra can pull starlette and uvicorn without the CLI paying for them.
 
+``fastapi`` is there for the same reason: :mod:`courserag.web` is imported inside
+``cmd_web`` and nowhere else, so the ``[web]`` extra stays off ``kb --help`` and off
+every retrieval path.
+
 These are only meaningful when the ``[local]`` extra is installed — otherwise the
 modules are absent no matter what the code does — so they skip without it.
 """
@@ -25,7 +29,15 @@ pytestmark = pytest.mark.skipif(
     not is_available(), reason="vacuous without the [local] extra installed"
 )
 
-HEAVY = ("torch", "sentence_transformers", "transformers", "mcp", "starlette", "uvicorn")
+HEAVY = (
+    "torch",
+    "sentence_transformers",
+    "transformers",
+    "mcp",
+    "fastapi",
+    "starlette",
+    "uvicorn",
+)
 
 _REPORT = f"""
 import sys
@@ -141,6 +153,45 @@ pathlib.Path("notes.txt").write_text("Skip lists use coin flips to pick tower he
 assert main(["init-course", "C"]) == 0
 assert main(["ingest", "C", "notes.txt", "--category", "lecture"]) == 0
 assert main(["search", "C", "tower height", "--json"]) == 0
+"""
+        )
+        == []
+    )
+
+
+def test_the_cli_never_imports_the_web_stack():
+    """A full sync is the folder-management path; the UI's server is not part of it.
+
+    ``kb sync`` and the web UI call the same functions, and this is what keeps that
+    from being expensive: the sharing goes one way, through courserag.sync, never back
+    up into courserag.web.
+    """
+    assert (
+        _heavy_modules_after(
+            """
+import pathlib, tempfile, os
+from courserag.cli import main
+os.chdir(tempfile.mkdtemp())
+pathlib.Path("config.toml").write_text('embedder = "dummy"\\n')
+assert main(["init-course", "C"]) == 0
+raw = pathlib.Path("course-kb/courses/C/raw")
+(raw / "lecture").mkdir(parents=True, exist_ok=True)
+(raw / "lecture" / "notes.txt").write_text("Skip lists use coin flips to pick tower height.\\n")
+assert main(["sync", "C"]) == 0
+assert main(["sync", "C", "--dry-run"]) == 0
+"""
+        )
+        == []
+    )
+
+
+def test_importing_the_web_package_alone_does_not_pull_fastapi():
+    """``courserag.web`` resolves its exports lazily, so importing it stays free."""
+    assert (
+        _heavy_modules_after(
+            """
+import courserag.web
+assert "create_app" in courserag.web.__all__
 """
         )
         == []

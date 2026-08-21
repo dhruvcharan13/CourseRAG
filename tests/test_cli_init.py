@@ -67,6 +67,8 @@ def test_unavailable_embedder_creates_nothing(tmp_path, monkeypatch, capsys):
     def _unavailable(name, cfg):
         raise ImportError('sentence-transformers is not installed. pip install -e ".[local]"')
 
+    # init-course resolves its own embedder (there is no manifest to match against yet),
+    # so the seam here is the CLI's, not courserag.ingest's.
     monkeypatch.setattr("courserag.cli.get_embedder", _unavailable)
 
     assert main(["init-course", "CS240-W26"]) == 1

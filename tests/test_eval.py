@@ -282,16 +282,21 @@ def test_committed_labels_point_at_real_pages(course):
     miss forever, quietly dragging the baseline Phase 4 is measured against.
     """
     fitz = pytest.importorskip("fitz")
-    corpus = REPO_ROOT / "corpus" / course
-    if not corpus.is_dir():
-        pytest.skip(f"corpus/{course} not present (source PDFs are gitignored)")
+    # The course's own raw/ folder is the source of truth for its documents, so the
+    # labels are validated against exactly the files the index was built from. Names
+    # are resolved by basename because raw/ nests files under category folders, and
+    # both the eval set and the index key documents by basename alone.
+    raw = REPO_ROOT / "course-kb" / "courses" / course / "raw"
+    if not raw.is_dir():
+        pytest.skip(f"{course} has no raw/ (source PDFs are gitignored)")
+    by_name = {p.name: p for p in raw.rglob("*") if p.is_file()}
 
     eval_set = load_eval_set(REPO_ROOT / "evals" / f"{course}.json")
     pages = {}
     for query in eval_set.queries:
         for source_file, page in sorted(query.gold):
-            path = corpus / source_file
-            assert path.is_file(), f"{query.id} labels missing file {source_file}"
+            path = by_name.get(source_file)
+            assert path is not None, f"{query.id} labels missing file {source_file}"
             if source_file not in pages:
                 with fitz.open(path) as doc:
                     pages[source_file] = len(doc)

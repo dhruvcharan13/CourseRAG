@@ -98,16 +98,18 @@ def test_query_model_mismatch_is_refused_loudly(course, tmp_path, capsys):
     """
     (tmp_path / "config.toml").write_text('embedder = "dummy"\n', encoding="utf-8")
     # Same 'dummy' family, different width -> a different model_id, so a mismatch.
-    import courserag.cli as cli
+    # Search resolves its embedder through courserag.ingest, so that ingest and search
+    # enforce the same guard from the same code.
+    import courserag.ingest as ingest
     from courserag.embedding.dummy import DummyEmbedder
 
-    original = cli.get_embedder
-    cli.get_embedder = lambda name, cfg: DummyEmbedder(dims=32)
+    original = ingest.get_embedder
+    ingest.get_embedder = lambda name, cfg: DummyEmbedder(dims=32)
     try:
         capsys.readouterr()
         assert main(["search", "CS240", "skip lists"]) == 1
     finally:
-        cli.get_embedder = original
+        ingest.get_embedder = original
 
     captured = capsys.readouterr()
     assert "embedder mismatch" in captured.err

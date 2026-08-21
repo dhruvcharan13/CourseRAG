@@ -80,7 +80,7 @@ def test_ingest_uses_the_passage_path_and_search_uses_the_query_path(
     """The asymmetry holds end to end through the CLI, offline, with no model loaded."""
     monkeypatch.chdir(tmp_path)
     recorder = _RecordingEmbedder()
-    monkeypatch.setattr("courserag.cli.get_embedder", lambda name, cfg: recorder)
+    monkeypatch.setattr("courserag.ingest.get_embedder", lambda name, cfg: recorder)
 
     (tmp_path / "notes.txt").write_text("Skip lists use coin flips to pick tower height.\n")
     assert main(["init-course", "C"]) == 0

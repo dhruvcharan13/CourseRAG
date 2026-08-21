@@ -82,7 +82,7 @@ def test_ingest_refuses_a_different_embedder_and_writes_nothing(
     capsys.readouterr()
 
     monkeypatch.setattr(
-        "courserag.cli.get_embedder", lambda name, cfg: _FakeEmbedder(model_id, dims)
+        "courserag.ingest.get_embedder", lambda name, cfg: _FakeEmbedder(model_id, dims)
     )
     other = tmp_path / "other.txt"
     other.write_text("A red-black tree is a balanced binary search tree.\n", encoding="utf-8")

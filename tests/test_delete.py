@@ -126,7 +126,7 @@ def test_delete_needs_no_embedder(tmp_path, monkeypatch):
     def _unavailable(name, cfg):
         raise ImportError("sentence-transformers is not installed")
 
-    monkeypatch.setattr("courserag.cli.get_embedder", _unavailable)
+    monkeypatch.setattr("courserag.ingest.get_embedder", _unavailable)
 
     assert main(["delete", "C", "notes.txt"]) == 0
     assert _store(tmp_path).source_files() == ["slides.txt"]
